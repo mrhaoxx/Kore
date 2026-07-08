@@ -17,9 +17,13 @@ import (
 
 func mustQ(s string) resource.Quantity { return resource.MustParse(s) }
 
-func adjCpus(a *api.ContainerAdjustment) string { return a.GetLinux().GetResources().GetCpu().GetCpus() }
-func adjMems(a *api.ContainerAdjustment) string { return a.GetLinux().GetResources().GetCpu().GetMems() }
-func updCpus(u *api.ContainerUpdate) string     { return u.GetLinux().GetResources().GetCpu().GetCpus() }
+func adjCpus(a *api.ContainerAdjustment) string {
+	return a.GetLinux().GetResources().GetCpu().GetCpus()
+}
+func adjMems(a *api.ContainerAdjustment) string {
+	return a.GetLinux().GetResources().GetCpu().GetMems()
+}
+func updCpus(u *api.ContainerUpdate) string { return u.GetLinux().GetResources().GetCpu().GetCpus() }
 
 type fakePods struct{ pods map[string]*corev1.Pod }
 
@@ -47,7 +51,9 @@ func (f *fakeRec) SetPodAnnotation(pod *corev1.Pod, k, v string) {
 }
 func (f *fakeRec) DeletePod(ns, name string) { f.deleted = append(f.deleted, ns+"/"+name) }
 
-type fakeRep struct{ last *v1alpha1.KoreNodeTopologyStatus }
+type fakeRep struct {
+	last *v1alpha1.KoreNodeTopologyStatus
+}
 
 func (f *fakeRep) Report(st v1alpha1.KoreNodeTopologyStatus) { f.last = &st }
 

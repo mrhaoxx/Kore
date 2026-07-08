@@ -15,6 +15,8 @@ type Config struct {
 	DefaultPlacement   string `json:"defaultPlacement"` // pack | scatter
 	DefaultSMTPolicy   string `json:"defaultSMTPolicy"` // full-core | logical
 	Remediation        string `json:"remediation"`      // strict | repair（spec §6 对账兜底）
+	// SharedPoolMin：独占分配/建池后全局共享池的最小保留核数（0 = 不限制）。
+	SharedPoolMin int `json:"sharedPoolMin"`
 }
 
 func Load(path string) (*Config, error) {
@@ -36,6 +38,9 @@ func Load(path string) (*Config, error) {
 	}
 	if err := oneOf("remediation", c.Remediation, "strict", "repair"); err != nil {
 		return nil, err
+	}
+	if c.SharedPoolMin < 0 {
+		return nil, fmt.Errorf("sharedPoolMin: must be >= 0, got %d", c.SharedPoolMin)
 	}
 	if _, err := c.Reserved(); err != nil {
 		return nil, fmt.Errorf("reservedSystemCpus: %w", err)

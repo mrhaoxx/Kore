@@ -144,7 +144,7 @@ func run(sysfs, nodeName, cfgPath, namespace, kubeletDir string) error {
 	}
 	go renewer.Run(ctx, 5*time.Second)
 
-	rep.Report(allocator.BuildStatus(allocator.NewState(topo, reservedSet)))
+	rep.Report(allocator.BuildStatus(allocator.NewState(topo, reservedSet, cfg.SharedPoolMin)))
 	log.Printf("kore-agent up on %s: %d zones, %d cpus", nodeName, len(topo.Zones), topo.AllCPUs().Size())
 	return st.Run(ctx) // 阻塞直到 NRI 连接结束/ctx 取消
 }

@@ -22,7 +22,7 @@ func Inspect(sysfsRoot, reservedCpus string) (string, error) {
 			return "", err
 		}
 	}
-	st := allocator.BuildStatus(allocator.NewState(topo, reserved))
+	st := allocator.BuildStatus(allocator.NewState(topo, reserved, 0))
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return "", err

@@ -25,7 +25,7 @@ func x86Topo() *topology.Topology {
 }
 
 func TestPreferredSpillsByDistance(t *testing.T) {
-	s := NewState(armTopo(), cpuset.New())
+	s := NewState(armTopo(), cpuset.New(), 0)
 	n := 0
 	a := alloc(t, s, "a", 6, func(r *Request) {
 		r.NUMAPolicy = request.NUMAPreferred
@@ -41,7 +41,7 @@ func TestPreferredSpillsByDistance(t *testing.T) {
 }
 
 func TestPreferredStaysSingleWhenFits(t *testing.T) {
-	s := NewState(armTopo(), cpuset.New())
+	s := NewState(armTopo(), cpuset.New(), 0)
 	a := alloc(t, s, "a", 3, func(r *Request) { r.NUMAPolicy = request.NUMAPreferred })
 	if len(a.NUMA) != 1 {
 		t.Fatalf("numa = %v, want single zone", a.NUMA)
@@ -49,7 +49,7 @@ func TestPreferredStaysSingleWhenFits(t *testing.T) {
 }
 
 func TestSpreadEven(t *testing.T) {
-	s := NewState(armTopo(), cpuset.New())
+	s := NewState(armTopo(), cpuset.New(), 0)
 	a := alloc(t, s, "a", 8, func(r *Request) { r.NUMAPolicy = request.NUMASpread })
 	if len(a.NUMA) != 4 {
 		t.Fatalf("numa = %v, want 4 zones", a.NUMA)
@@ -63,7 +63,7 @@ func TestSpreadEven(t *testing.T) {
 }
 
 func TestSpreadUnevenRemainder(t *testing.T) {
-	s := NewState(armTopo(), cpuset.New())
+	s := NewState(armTopo(), cpuset.New(), 0)
 	a := alloc(t, s, "a", 6, func(r *Request) { r.NUMAPolicy = request.NUMASpread })
 	sizes := map[int]int{}
 	for _, z := range a.NUMA {
@@ -86,7 +86,7 @@ func TestSpreadUnevenRemainder(t *testing.T) {
 }
 
 func TestScatterWithinZone(t *testing.T) {
-	s := NewState(armTopo(), cpuset.New())
+	s := NewState(armTopo(), cpuset.New(), 0)
 	a := alloc(t, s, "a", 2, func(r *Request) { r.Placement = request.PlacementScatter })
 	if a.CPUs.String() != "0,2" {
 		t.Fatalf("cpus = %s, want 0,2", a.CPUs)
@@ -94,15 +94,15 @@ func TestScatterWithinZone(t *testing.T) {
 }
 
 func TestSMTFullCore(t *testing.T) {
-	s := NewState(x86Topo(), cpuset.New())
-	a := alloc(t, s, "a", 4, nil) // full-core 默认
+	s := NewState(x86Topo(), cpuset.New(), 0)
+	a := alloc(t, s, "a", 4, nil)     // full-core 默认
 	if a.CPUs.String() != "0-1,8-9" { // 两个完整 sibling 组
 		t.Fatalf("cpus = %s, want 0-1,8-9", a.CPUs)
 	}
 }
 
 func TestSMTMisalignmentFails(t *testing.T) {
-	s := NewState(x86Topo(), cpuset.New())
+	s := NewState(x86Topo(), cpuset.New(), 0)
 	_, err := s.Allocate(Request{PodUID: "u", Pod: "d/p", Container: "app", CPUs: 3,
 		NUMAPolicy: request.NUMASingle, SMTPolicy: request.SMTFullCore})
 	if !errors.Is(err, ErrSMTAlignment) {
@@ -111,7 +111,7 @@ func TestSMTMisalignmentFails(t *testing.T) {
 }
 
 func TestSMTLogicalAllowsOdd(t *testing.T) {
-	s := NewState(x86Topo(), cpuset.New())
+	s := NewState(x86Topo(), cpuset.New(), 0)
 	a := alloc(t, s, "a", 3, func(r *Request) { r.SMTPolicy = request.SMTLogical })
 	if a.CPUs.String() != "0-2" {
 		t.Fatalf("cpus = %s, want 0-2", a.CPUs)
@@ -119,9 +119,9 @@ func TestSMTLogicalAllowsOdd(t *testing.T) {
 }
 
 func TestSMTPartialCoreExcludedFromFullCore(t *testing.T) {
-	s := NewState(x86Topo(), cpuset.New())
+	s := NewState(x86Topo(), cpuset.New(), 0)
 	alloc(t, s, "a", 1, func(r *Request) { r.SMTPolicy = request.SMTLogical }) // 占 {0}，物理核 (0,8) 残缺
-	b := alloc(t, s, "b", 2, nil)                                             // full-core 必须避开残缺核
+	b := alloc(t, s, "b", 2, nil)                                              // full-core 必须避开残缺核
 	if b.CPUs.Contains(8) {
 		t.Fatalf("full-core alloc %s must not use partially-used core", b.CPUs)
 	}

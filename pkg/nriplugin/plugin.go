@@ -50,7 +50,7 @@ func New(topo *topology.Topology, cfg *config.Config, pods PodGetter, rec Record
 	}
 	return &Plugin{
 		topo: topo, cfg: cfg,
-		state: allocator.NewState(topo, reserved),
+		state: allocator.NewState(topo, reserved, cfg.SharedPoolMin),
 		pods:  pods, rec: rec, rep: rep,
 		shared: map[string]bool{},
 	}, nil

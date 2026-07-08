@@ -2,6 +2,7 @@ package allocator
 
 import (
 	"k8s.io/apimachinery/pkg/api/resource"
+	"sort"
 
 	v1alpha1 "github.com/zjusct/kore/pkg/apis/kore/v1alpha1"
 )
@@ -36,6 +37,16 @@ func BuildStatus(s *State) v1alpha1.KoreNodeTopologyStatus {
 		st.Allocations = append(st.Allocations, v1alpha1.Allocation{
 			PodUID: a.PodUID, Pod: a.Pod, Container: a.Container,
 			Cpuset: a.CPUs.String(), NUMA: a.NUMA,
+		})
+	}
+	for _, p := range s.Pools() {
+		members := make([]string, 0, len(p.Members))
+		for uid := range p.Members {
+			members = append(members, uid)
+		}
+		sort.Strings(members)
+		st.Pools = append(st.Pools, v1alpha1.Pool{
+			Name: p.Name, Cpuset: p.CPUs.String(), NUMA: p.NUMA, Members: members,
 		})
 	}
 	return st

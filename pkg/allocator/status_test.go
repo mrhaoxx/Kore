@@ -7,7 +7,7 @@ import (
 )
 
 func TestBuildStatus(t *testing.T) {
-	s := NewState(x86Topo(), cpuset.New(0, 8)) // 预留物理核 (0,8)
+	s := NewState(x86Topo(), cpuset.New(0, 8), 0) // 预留物理核 (0,8)
 	n := 0
 	alloc(t, s, "a", 2, func(r *Request) { r.ReservedNUMA = &n }) // {1,9}
 	st := BuildStatus(s)
@@ -43,7 +43,7 @@ func TestBuildStatus(t *testing.T) {
 }
 
 func TestBuildStatusNoSMT(t *testing.T) {
-	s := NewState(armTopo(), cpuset.New())
+	s := NewState(armTopo(), cpuset.New(), 0)
 	st := BuildStatus(s)
 	if len(st.Zones[0].SMTSiblings) != 0 {
 		t.Fatalf("siblings = %v, want empty on non-SMT", st.Zones[0].SMTSiblings)

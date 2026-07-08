@@ -40,7 +40,7 @@ func alloc(t *testing.T, s *State, name string, cpus int, mut func(*Request)) Al
 }
 
 func TestPackSingleOnEmpty(t *testing.T) {
-	s := NewState(armTopo(), cpuset.New())
+	s := NewState(armTopo(), cpuset.New(), 0)
 	a := alloc(t, s, "a", 2, nil)
 	if a.CPUs.String() != "0-1" || len(a.NUMA) != 1 || a.NUMA[0] != 0 {
 		t.Fatalf("got %s numa %v", a.CPUs, a.NUMA)
@@ -48,7 +48,7 @@ func TestPackSingleOnEmpty(t *testing.T) {
 }
 
 func TestBinpackPrefersTightestZone(t *testing.T) {
-	s := NewState(armTopo(), cpuset.New())
+	s := NewState(armTopo(), cpuset.New(), 0)
 	alloc(t, s, "a", 2, nil) // zone0 剩 2
 	b := alloc(t, s, "b", 2, nil)
 	if b.NUMA[0] != 0 { // 恰好填满 zone0
@@ -61,7 +61,7 @@ func TestBinpackPrefersTightestZone(t *testing.T) {
 }
 
 func TestPackBestFitRun(t *testing.T) {
-	s := NewState(armTopo(), cpuset.New())
+	s := NewState(armTopo(), cpuset.New(), 0)
 	alloc(t, s, "a", 1, nil) // {0}
 	alloc(t, s, "b", 1, nil) // {1}
 	s.Release("uid-a")       // zone0 free {0,2,3}
@@ -72,7 +72,7 @@ func TestPackBestFitRun(t *testing.T) {
 }
 
 func TestReservedNUMARespectedAndStrict(t *testing.T) {
-	s := NewState(armTopo(), cpuset.New())
+	s := NewState(armTopo(), cpuset.New(), 0)
 	n := 2
 	a := alloc(t, s, "a", 2, func(r *Request) { r.ReservedNUMA = &n })
 	if a.NUMA[0] != 2 || a.CPUs.String() != "8-9" {
@@ -87,7 +87,7 @@ func TestReservedNUMARespectedAndStrict(t *testing.T) {
 }
 
 func TestSingleInsufficient(t *testing.T) {
-	s := NewState(armTopo(), cpuset.New())
+	s := NewState(armTopo(), cpuset.New(), 0)
 	_, err := s.Allocate(Request{PodUID: "u", Pod: "d/p", Container: "app", CPUs: 5, NUMAPolicy: request.NUMASingle})
 	if !errors.Is(err, ErrInsufficient) {
 		t.Fatalf("err = %v", err)
@@ -95,7 +95,7 @@ func TestSingleInsufficient(t *testing.T) {
 }
 
 func TestExplicit(t *testing.T) {
-	s := NewState(armTopo(), cpuset.New())
+	s := NewState(armTopo(), cpuset.New(), 0)
 	cs := cpuset.New(4, 5)
 	a := alloc(t, s, "a", 2, func(r *Request) { r.Explicit = &cs })
 	if a.CPUs.String() != "4-5" || a.NUMA[0] != 1 {
@@ -109,7 +109,7 @@ func TestExplicit(t *testing.T) {
 }
 
 func TestReservedSystemCpusExcluded(t *testing.T) {
-	s := NewState(armTopo(), cpuset.New(0))
+	s := NewState(armTopo(), cpuset.New(0), 0)
 	a := alloc(t, s, "a", 4, nil) // zone0 只剩 3 → 落 zone1
 	if a.NUMA[0] != 1 {
 		t.Fatalf("numa %v, want 1", a.NUMA)
@@ -120,7 +120,7 @@ func TestReservedSystemCpusExcluded(t *testing.T) {
 }
 
 func TestSharedPool(t *testing.T) {
-	s := NewState(armTopo(), cpuset.New(0))
+	s := NewState(armTopo(), cpuset.New(0), 0)
 	alloc(t, s, "a", 2, func(r *Request) { n := 1; r.ReservedNUMA = &n }) // {4,5}
 	got := s.SharedPool().String()
 	if got != "1-3,6-15" {
@@ -129,7 +129,7 @@ func TestSharedPool(t *testing.T) {
 }
 
 func TestRestoreAndConflict(t *testing.T) {
-	s := NewState(armTopo(), cpuset.New())
+	s := NewState(armTopo(), cpuset.New(), 0)
 	a := Allocation{PodUID: "u1", Pod: "d/p1", Container: "app", CPUs: cpuset.New(0, 1), NUMA: []int{0}}
 	if err := s.Restore(a); err != nil {
 		t.Fatal(err)
@@ -141,7 +141,7 @@ func TestRestoreAndConflict(t *testing.T) {
 }
 
 func TestDoubleAllocateSameContainer(t *testing.T) {
-	s := NewState(armTopo(), cpuset.New())
+	s := NewState(armTopo(), cpuset.New(), 0)
 	alloc(t, s, "a", 1, nil)
 	_, err := s.Allocate(Request{PodUID: "uid-a", Pod: "default/a", Container: "app", CPUs: 1, NUMAPolicy: request.NUMASingle})
 	if !errors.Is(err, ErrConflict) {

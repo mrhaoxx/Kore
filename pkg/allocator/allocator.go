@@ -40,13 +40,18 @@ type Request struct {
 }
 
 type State struct {
-	topo     *topology.Topology
-	reserved cpuset.CPUSet
-	allocs   map[string]Allocation
+	topo          *topology.Topology
+	reserved      cpuset.CPUSet
+	sharedPoolMin int
+	allocs        map[string]Allocation
+	pools         map[string]*PoolInfo
 }
 
-func NewState(topo *topology.Topology, reserved cpuset.CPUSet) *State {
-	return &State{topo: topo, reserved: reserved, allocs: map[string]Allocation{}}
+// NewState 创建节点分配状态。sharedPoolMin：独占分配/建池后全局共享池的最小
+// 保留核数（0 = 不限制）。
+func NewState(topo *topology.Topology, reserved cpuset.CPUSet, sharedPoolMin int) *State {
+	return &State{topo: topo, reserved: reserved, sharedPoolMin: sharedPoolMin,
+		allocs: map[string]Allocation{}, pools: map[string]*PoolInfo{}}
 }
 
 func key(podUID, container string) string { return podUID + "/" + container }
@@ -55,6 +60,9 @@ func (s *State) Used() cpuset.CPUSet {
 	u := cpuset.New()
 	for _, a := range s.allocs {
 		u = u.Union(a.CPUs)
+	}
+	for _, p := range s.pools {
+		u = u.Union(p.CPUs)
 	}
 	return u
 }
@@ -102,6 +110,14 @@ func (s *State) Release(podUID string) {
 			delete(s.allocs, k)
 		}
 	}
+	for name, p := range s.pools {
+		if p.Members[podUID] {
+			delete(p.Members, podUID)
+			if len(p.Members) == 0 { // 末位成员离开 → 释放池
+				delete(s.pools, name)
+			}
+		}
+	}
 }
 
 func (s *State) Allocate(req Request) (Allocation, error) {
@@ -136,6 +152,9 @@ func (s *State) Allocate(req Request) (Allocation, error) {
 	if err != nil {
 		return Allocation{}, err
 	}
+	if err := s.checkSharedPoolMin(picked); err != nil {
+		return Allocation{}, err
+	}
 	a := Allocation{PodUID: req.PodUID, Pod: req.Pod, Container: req.Container, CPUs: picked, NUMA: numa}
 	s.allocs[key(req.PodUID, req.Container)] = a
 	return a, nil
@@ -146,6 +165,9 @@ func (s *State) allocateExplicit(req Request) (Allocation, error) {
 	free := s.topo.AllCPUs().Difference(s.reserved).Difference(s.Used())
 	if !want.Difference(free).IsEmpty() {
 		return Allocation{}, fmt.Errorf("%w: explicit cpuset %s not fully free (free: %s)", ErrConflict, want, free)
+	}
+	if err := s.checkSharedPoolMin(want); err != nil {
+		return Allocation{}, err
 	}
 	zones := map[int]bool{}
 	for _, c := range want.List() {
