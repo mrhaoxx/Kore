@@ -125,6 +125,57 @@ func TestParsePod(t *testing.T) {
 			wantErr: "size",
 		},
 		{
+			name: "纯池模式合法",
+			pod: pod(map[string]string{AnnoPin: "false", AnnoPool: "team-hpl", AnnoPoolSize: "64"}, func(p *corev1.Pod) {
+				delete(p.Annotations, AnnoPin)
+				p.Spec.Containers[0].Resources.Requests[corev1.ResourceCPU] = resource.MustParse("500m")
+				p.Spec.Containers[0].Resources.Limits[corev1.ResourceCPU] = resource.MustParse("500m")
+			}),
+			check: func(t *testing.T, r *Request) {
+				if r.Pool != "team-hpl" || r.PoolSize != 64 {
+					t.Fatalf("pool: %+v", r)
+				}
+				if len(r.Containers) != 0 {
+					t.Fatalf("pool mode must not require pinned containers: %+v", r.Containers)
+				}
+				if r.NUMAPolicy != NUMASingle || r.MemoryPolicy != MemStrict {
+					t.Fatalf("policies: %+v", r)
+				}
+			},
+		},
+		{
+			name:    "池缺 size 报错",
+			pod:     pod(map[string]string{AnnoPool: "demo"}, nil),
+			wantErr: "pool-size",
+		},
+		{
+			name:    "size 非正整数报错",
+			pod:     pod(map[string]string{AnnoPool: "demo", AnnoPoolSize: "0"}, nil),
+			wantErr: "positive integer",
+		},
+		{
+			name:    "size 无池报错",
+			pod:     pod(map[string]string{AnnoPoolSize: "8"}, nil),
+			wantErr: "requires",
+		},
+		{
+			name:    "池与 pin 互斥",
+			pod:     pod(map[string]string{AnnoPin: "true", AnnoPool: "demo", AnnoPoolSize: "8"}, nil),
+			wantErr: "mutually exclusive",
+		},
+		{
+			name: "池与 cpuset 互斥",
+			pod: pod(map[string]string{AnnoPool: "demo", AnnoPoolSize: "8", AnnoCPUSet: "0-7"}, func(p *corev1.Pod) {
+				p.Spec.NodeName = "m602"
+			}),
+			wantErr: "mutually exclusive",
+		},
+		{
+			name:    "非法池名报错",
+			pod:     pod(map[string]string{AnnoPool: "Team_HPL", AnnoPoolSize: "8"}, nil),
+			wantErr: "DNS label",
+		},
+		{
 			name: "显式 cpuset 多容器不允许",
 			pod: pod(map[string]string{AnnoPin: "true", AnnoCPUSet: "0-7"}, func(p *corev1.Pod) {
 				p.Spec.NodeName = "m602"

@@ -3,6 +3,8 @@ package request
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/cpuset"
@@ -15,6 +17,10 @@ const (
 	AnnoPlacement    = "kore.zjusct.io/placement"
 	AnnoSMTPolicy    = "kore.zjusct.io/smt-policy"
 	AnnoCPUSet       = "kore.zjusct.io/cpuset"
+	// AnnoPool/AnnoPoolSize：命名 CPU 池（balloon）——一组 Pod 共享固定大小的
+	// 专属核心区，对外独占、池内共享。首个成员建池，末位成员释放。
+	AnnoPool     = "kore.zjusct.io/pool"
+	AnnoPoolSize = "kore.zjusct.io/pool-size"
 	// AnnoReservedNUMA 由 kore-scheduler PreBind 写入。
 	AnnoReservedNUMA = "kore.zjusct.io/reserved-numa"
 	// AnnoAllocated 由 kore-agent 分配后写入（只读，供观测）。
@@ -55,16 +61,30 @@ type Request struct {
 	// Explicit 非 nil 表示用户显式指定核号（逃生舱）。
 	Explicit   *cpuset.CPUSet
 	Containers []ContainerRequest
+	// Pool 非空表示池模式：Pod 全部容器共享名为 Pool、大小 PoolSize 的核心区。
+	Pool     string
+	PoolSize int
 }
 
-// ParsePod 解析 Kore 注解。未启用 pin 返回 (nil, nil)；配置非法返回 error。
+var poolNameRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+// ParsePod 解析 Kore 注解。非 kore Pod（无 pin 且无 pool）返回 (nil, nil)；
+// 配置非法返回 error。
 func ParsePod(pod *corev1.Pod) (*Request, error) {
-	switch pod.Annotations[AnnoPin] {
-	case "", "false":
+	pinVal := pod.Annotations[AnnoPin]
+	if pinVal != "" && pinVal != "true" && pinVal != "false" {
+		return nil, fmt.Errorf("%s must be \"true\" or \"false\", got %q", AnnoPin, pinVal)
+	}
+	pin := pinVal == "true"
+	poolName, hasPool := pod.Annotations[AnnoPool]
+	if !pin && !hasPool {
+		if _, ok := pod.Annotations[AnnoPoolSize]; ok {
+			return nil, fmt.Errorf("%s requires %s", AnnoPoolSize, AnnoPool)
+		}
 		return nil, nil
-	case "true":
-	default:
-		return nil, fmt.Errorf("%s must be \"true\" or \"false\", got %q", AnnoPin, pod.Annotations[AnnoPin])
+	}
+	if pin && hasPool {
+		return nil, fmt.Errorf("%s and %s are mutually exclusive", AnnoPin, AnnoPool)
 	}
 
 	// placement/smt-policy 未设置时留空（""）：集群默认值来自 ConfigMap（spec §6），
@@ -85,6 +105,25 @@ func ParsePod(pod *corev1.Pod) (*Request, error) {
 	}
 	if r.SMTPolicy, err = parseEnum(pod, AnnoSMTPolicy, "", SMTFullCore, SMTLogical); err != nil {
 		return nil, err
+	}
+
+	if hasPool {
+		if len(poolName) > 63 || !poolNameRe.MatchString(poolName) {
+			return nil, fmt.Errorf("%s: invalid pool name %q (must be a DNS label)", AnnoPool, poolName)
+		}
+		sizeStr, ok := pod.Annotations[AnnoPoolSize]
+		if !ok {
+			return nil, fmt.Errorf("%s requires %s", AnnoPool, AnnoPoolSize)
+		}
+		n, perr := strconv.Atoi(sizeStr)
+		if perr != nil || n <= 0 {
+			return nil, fmt.Errorf("%s must be a positive integer, got %q", AnnoPoolSize, sizeStr)
+		}
+		if _, set := pod.Annotations[AnnoCPUSet]; set {
+			return nil, fmt.Errorf("%s and %s are mutually exclusive", AnnoPool, AnnoCPUSet)
+		}
+		r.Pool, r.PoolSize = poolName, n
+		return r, nil // 池内共享：不要求整数 CPU/requests==limits
 	}
 
 	for _, c := range pod.Spec.Containers {
