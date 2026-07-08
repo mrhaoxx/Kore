@@ -37,6 +37,28 @@ spec:
 `placement: pack|scatter`、`smt-policy: full-core|logical`。
 实际绑到的核回写在 `kore.zjusct.io/allocated-cpuset` 注解。
 
+### CPU 池（v0.2.0）
+
+一组 Pod 共享一块固定大小的专属核心区（对外独占、池内共享，balloon 语义）：
+
+```yaml
+metadata:
+  annotations:
+    kore.zjusct.io/pool: "team-hpl"     # 池名（DNS label）
+    kore.zjusct.io/pool-size: "64"      # 池大小；首个成员到达节点时建池
+spec:
+  containers:
+  - resources:
+      requests: { cpu: "500m" }          # 池成员不要求整数 CPU
+      limits: { cpu: "8" }
+```
+
+- 首个成员按 `numa-policy`（默认 single）建池；后续成员自动跟随到同一节点同一批核；末位成员退出时释放
+- 与 `pin`/`cpuset` 互斥；池成员不注入门闩资源（agent 失活窗口由 Synchronize 对账兜底）
+- 节点池状态：`kubectl get knt <node> -o jsonpath='{.status.pools}'`
+
+agent ConfigMap 另支持 `sharedPoolMin: N`：独占分配/建池后全局共享池至少保留 N 核，触底拒绝。
+
 ## 部署
 
 前置：containerd ≥2.0（NRI 默认开启）；kubelet 保持 `cpu-manager-policy=none`。

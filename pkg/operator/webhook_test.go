@@ -105,6 +105,28 @@ func TestMutatePod(t *testing.T) {
 			t.Fatal("sidecar must not get extended resource")
 		}
 	})
+	t.Run("池成员注入调度器但不注入门闩", func(t *testing.T) {
+		in := webhookPod(map[string]string{request.AnnoPool: "demo", request.AnnoPoolSize: "8"}, func(p *corev1.Pod) {
+			p.Spec.Containers[0].Resources.Requests[corev1.ResourceCPU] = resource.MustParse("500m")
+			p.Spec.Containers[0].Resources.Limits[corev1.ResourceCPU] = resource.MustParse("500m")
+		})
+		out, err := MutatePod(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.Spec.SchedulerName != "kore-scheduler" {
+			t.Fatalf("schedulerName = %q", out.Spec.SchedulerName)
+		}
+		if _, ok := out.Spec.Containers[0].Resources.Limits[corev1.ResourceName(request.ExtendedResource)]; ok {
+			t.Fatal("pool members must not get the gate resource (shared, would over-count)")
+		}
+	})
+	t.Run("池与 pin 同时设置被拒", func(t *testing.T) {
+		in := webhookPod(map[string]string{request.AnnoPin: "true", request.AnnoPool: "demo", request.AnnoPoolSize: "8"}, nil)
+		if err := ValidatePod(in); err == nil {
+			t.Fatal("expected denial")
+		}
+	})
 	t.Run("非法注解报错", func(t *testing.T) {
 		in := webhookPod(map[string]string{request.AnnoPin: "true", request.AnnoNUMAPolicy: "bogus"}, nil)
 		if _, err := MutatePod(in); err == nil {

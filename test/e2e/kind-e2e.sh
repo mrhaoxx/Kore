@@ -54,6 +54,38 @@ echo "cgroup cpuset=$CPUS annotation=$ANNO"
 NCPUS=$(kubectl exec kore-e2e-pinned -- sh -c 'grep -c processor /proc/cpuinfo' || true)
 echo "container sees $NCPUS cpus (want 2 via cpuset)"
 
+step "6b/8 CPU 池：两成员共享同一核心区"
+for i in 1 2; do
+  cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kore-e2e-pool-$i
+  annotations:
+    kore.zjusct.io/pool: "demo"
+    kore.zjusct.io/pool-size: "2"
+spec:
+  restartPolicy: Never
+  containers:
+  - name: app
+    image: busybox:1.36
+    command: ["sleep", "3600"]
+    resources:
+      requests: { cpu: "200m", memory: "32Mi" }
+      limits: { cpu: "200m", memory: "32Mi" }
+EOF
+done
+kubectl wait --for=condition=Ready pod/kore-e2e-pool-1 pod/kore-e2e-pool-2 --timeout=120s
+POOL1=$(kubectl exec kore-e2e-pool-1 -- cat /sys/fs/cgroup/cpuset.cpus.effective)
+POOL2=$(kubectl exec kore-e2e-pool-2 -- cat /sys/fs/cgroup/cpuset.cpus.effective)
+echo "pool member1=$POOL1 member2=$POOL2 pinned=$CPUS"
+[ -n "$POOL1" ] && [ "$POOL1" = "$POOL2" ] || { echo "FAIL: pool members must share cpuset"; exit 1; }
+[ "$POOL1" != "$CPUS" ] || { echo "FAIL: pool must not overlap pinned pod"; exit 1; }
+kubectl delete pod kore-e2e-pool-1 --wait=true
+P2=$(kubectl exec kore-e2e-pool-2 -- cat /sys/fs/cgroup/cpuset.cpus.effective)
+[ "$P2" = "$POOL1" ] || { echo "FAIL: pool must survive first member exit"; exit 1; }
+kubectl delete pod kore-e2e-pool-2 --wait=true
+
 step "7/8 三重防线：杀 agent 后新绑核 Pod 必须 Pending"
 kubectl -n kore-system delete ds/kore-agent
 sleep 20   # 等 Lease 过期 + 污点生效
