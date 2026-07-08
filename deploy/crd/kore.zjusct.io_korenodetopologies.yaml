@@ -64,6 +64,30 @@ spec:
                   - podUID
                   type: object
                 type: array
+              pools:
+                description: Pools 是节点上的命名 CPU 池（成员共享、对外独占）。
+                items:
+                  properties:
+                    cpuset:
+                      type: string
+                    members:
+                      description: Members 是成员 Pod 的 UID（调度器预占清理用）。
+                      items:
+                        type: string
+                      type: array
+                    name:
+                      type: string
+                    numa:
+                      items:
+                        type: integer
+                      type: array
+                  required:
+                  - cpuset
+                  - members
+                  - name
+                  - numa
+                  type: object
+                type: array
               reservedSystemCpus:
                 description: ReservedSystemCpus 是系统预留核（cpulist 语法，如 "0-1"）。
                 type: string

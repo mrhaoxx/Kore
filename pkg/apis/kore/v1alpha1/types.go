@@ -31,6 +31,16 @@ type KoreNodeTopologyStatus struct {
 	ReservedSystemCpus string       `json:"reservedSystemCpus,omitempty"`
 	Zones              []Zone       `json:"zones,omitempty"`
 	Allocations        []Allocation `json:"allocations,omitempty"`
+	// Pools 是节点上的命名 CPU 池（成员共享、对外独占）。
+	Pools []Pool `json:"pools,omitempty"`
+}
+
+type Pool struct {
+	Name   string `json:"name"`
+	Cpuset string `json:"cpuset"`
+	NUMA   []int  `json:"numa"`
+	// Members 是成员 Pod 的 UID（调度器预占清理用）。
+	Members []string `json:"members"`
 }
 
 type Zone struct {

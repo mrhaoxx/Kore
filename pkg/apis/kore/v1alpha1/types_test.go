@@ -32,6 +32,7 @@ func TestStatusRoundtrip(t *testing.T) {
 			Devices:     []Device{},
 		}},
 		Allocations: []Allocation{{PodUID: "u1", Pod: "default/hpc-0", Container: "app", Cpuset: "8-15", NUMA: []int{0}}},
+		Pools:       []Pool{{Name: "team-hpl", Cpuset: "16-31", NUMA: []int{1}, Members: []string{"u2", "u3"}}},
 	}
 	b, err := json.Marshal(in)
 	if err != nil {
@@ -43,5 +44,8 @@ func TestStatusRoundtrip(t *testing.T) {
 	}
 	if out.Zones[0].FreeCpus != "4-15,36-47" || out.Allocations[0].Cpuset != "8-15" {
 		t.Fatalf("roundtrip mismatch: %+v", out)
+	}
+	if len(out.Pools) != 1 || out.Pools[0].Cpuset != "16-31" || len(out.Pools[0].Members) != 2 {
+		t.Fatalf("pools roundtrip mismatch: %+v", out.Pools)
 	}
 }
