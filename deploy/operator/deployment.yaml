@@ -14,7 +14,7 @@ spec:
       serviceAccountName: kore-operator
       containers:
       - name: operator
-        image: docker.io/mrhaoxx/kore-operator:v0.2.0   # 按实际镜像仓库修改
+        image: docker.io/mrhaoxx/kore-operator:v0.3.0   # 按实际镜像仓库修改
         ports:
         - { containerPort: 9443, name: webhook }
         volumeMounts:

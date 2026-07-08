@@ -84,7 +84,35 @@ echo "pool member1=$POOL1 member2=$POOL2 pinned=$CPUS"
 kubectl delete pod kore-e2e-pool-1 --wait=true
 P2=$(kubectl exec kore-e2e-pool-2 -- cat /sys/fs/cgroup/cpuset.cpus.effective)
 [ "$P2" = "$POOL1" ] || { echo "FAIL: pool must survive first member exit"; exit 1; }
-kubectl delete pod kore-e2e-pool-2 --wait=true
+
+step "6c/8 池在线扩容：晚创建成员带新 size，存量成员零重启变更"
+cat <<EOF2 | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kore-e2e-pool-3
+  annotations:
+    kore.zjusct.io/pool: "demo"
+    kore.zjusct.io/pool-size: "3"
+spec:
+  restartPolicy: Never
+  containers:
+  - name: app
+    image: busybox:1.36
+    command: ["sleep", "3600"]
+    resources:
+      requests: { cpu: "200m", memory: "32Mi" }
+      limits: { cpu: "200m", memory: "32Mi" }
+EOF2
+kubectl wait --for=condition=Ready pod/kore-e2e-pool-3 --timeout=120s
+P3=$(kubectl exec kore-e2e-pool-3 -- cat /sys/fs/cgroup/cpuset.cpus.effective)
+P2NOW=$(kubectl exec kore-e2e-pool-2 -- cat /sys/fs/cgroup/cpuset.cpus.effective)
+RESTARTS=$(kubectl get pod kore-e2e-pool-2 -o jsonpath='{.status.containerStatuses[0].restartCount}')
+echo "resized: member3=$P3 member2=$P2NOW restarts=$RESTARTS"
+[ "$P3" = "$P2NOW" ] || { echo "FAIL: resize must broadcast"; exit 1; }
+[ "$P3" != "$POOL1" ] || { echo "FAIL: pool size must have changed"; exit 1; }
+[ "$RESTARTS" = "0" ] || { echo "FAIL: existing member must not restart"; exit 1; }
+kubectl delete pod kore-e2e-pool-2 kore-e2e-pool-3 --wait=true
 
 step "7/8 三重防线：杀 agent 后新绑核 Pod 必须 Pending"
 kubectl -n kore-system delete ds/kore-agent
