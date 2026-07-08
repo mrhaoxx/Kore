@@ -24,13 +24,22 @@ import (
 var contextFlag string
 
 func main() {
+	rest := os.Args[1:]
 	args := []string{os.Args[0]}
-	for _, a := range os.Args[1:] { // 提取 --context=<name> / --context <name>
-		if strings.HasPrefix(a, "--context=") {
+	for i := 0; i < len(rest); i++ { // 提取 --context=<name> 与 --context <name> 两种形式
+		a := rest[i]
+		switch {
+		case strings.HasPrefix(a, "--context="):
 			contextFlag = strings.TrimPrefix(a, "--context=")
-			continue
+		case a == "--context" && i+1 < len(rest):
+			i++
+			contextFlag = rest[i]
+		case strings.HasPrefix(a, "--"):
+			fmt.Fprintf(os.Stderr, "unknown flag %q (supported: --context)\n", a)
+			os.Exit(2)
+		default:
+			args = append(args, a)
 		}
-		args = append(args, a)
 	}
 	os.Args = args
 	if len(os.Args) < 2 {
