@@ -32,7 +32,6 @@ import (
 	"github.com/zjusct/kore/pkg/agent/lease"
 	"github.com/zjusct/kore/pkg/agent/reporter"
 	v1alpha1 "github.com/zjusct/kore/pkg/apis/kore/v1alpha1"
-	"github.com/zjusct/kore/pkg/allocator"
 	"github.com/zjusct/kore/pkg/deviceplugin"
 	"github.com/zjusct/kore/pkg/nriplugin"
 	"github.com/zjusct/kore/pkg/topology"
@@ -113,7 +112,7 @@ func run(sysfs, nodeName, cfgPath, namespace, kubeletDir string) error {
 	rec := broadcaster.NewRecorder(sch, corev1.EventSource{Component: "kore-agent", Host: nodeName})
 
 	adapters := &k8sAdapters{cs: cs, rec: rec, lister: podLister, ctx: ctx}
-	rep := &asyncReporter{r: reporter.New(crc, nodeName), ctx: ctx}
+	rep := newAsyncReporter(ctx, reporter.New(crc, nodeName))
 
 	plugin, err := nriplugin.New(topo, cfg, adapters, adapters, rep)
 	if err != nil {
@@ -144,7 +143,8 @@ func run(sysfs, nodeName, cfgPath, namespace, kubeletDir string) error {
 	}
 	go renewer.Run(ctx, 5*time.Second)
 
-	rep.Report(allocator.BuildStatus(allocator.NewState(topo, reservedSet, cfg.SharedPoolMin)))
+	// 不在此处上报初始状态：NRI 注册时 Synchronize 必然执行并上报恢复后的
+	// 权威账本；启动期的空状态报告会与之竞态，曾导致 CR 账本被清空。
 	log.Printf("kore-agent up on %s: %d zones, %d cpus", nodeName, len(topo.Zones), topo.AllCPUs().Size())
 	return st.Run(ctx) // 阻塞直到 NRI 连接结束/ctx 取消
 }
@@ -186,15 +186,40 @@ func (a *k8sAdapters) DeletePod(ns, name string) {
 	}()
 }
 
+// asyncReporter 串行上报且只保最新状态：并发 goroutine 上报会乱序，
+// 旧状态可能覆盖新状态（账本竞态）。
 type asyncReporter struct {
-	r   *reporter.Reporter
-	ctx context.Context
+	r  *reporter.Reporter
+	ch chan v1alpha1.KoreNodeTopologyStatus
+}
+
+func newAsyncReporter(ctx context.Context, r *reporter.Reporter) *asyncReporter {
+	ar := &asyncReporter{r: r, ch: make(chan v1alpha1.KoreNodeTopologyStatus, 1)}
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case st := <-ar.ch:
+				c, cancel := context.WithTimeout(ctx, 10*time.Second)
+				_ = ar.r.Report(c, st)
+				cancel()
+			}
+		}
+	}()
+	return ar
 }
 
 func (ar *asyncReporter) Report(st v1alpha1.KoreNodeTopologyStatus) {
-	go func() {
-		ctx, cancel := context.WithTimeout(ar.ctx, 10*time.Second)
-		defer cancel()
-		_ = ar.r.Report(ctx, st)
-	}()
+	for {
+		select {
+		case ar.ch <- st:
+			return
+		default: // 挤掉未发出的旧状态，只保最新
+			select {
+			case <-ar.ch:
+			default:
+			}
+		}
+	}
 }
