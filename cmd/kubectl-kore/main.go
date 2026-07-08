@@ -34,6 +34,8 @@ func main() {
 		case a == "--context" && i+1 < len(rest):
 			i++
 			contextFlag = rest[i]
+		case a == "--once":
+			args = append(args, a)
 		case strings.HasPrefix(a, "--"):
 			fmt.Fprintf(os.Stderr, "unknown flag %q (supported: --context)\n", a)
 			os.Exit(2)
@@ -43,7 +45,7 @@ func main() {
 	}
 	os.Args = args
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: kubectl kore nodes|pools|pod <ns> <name>")
+		fmt.Fprintln(os.Stderr, "usage: kubectl kore nodes|pools|top [--once]|pod <ns> <name>")
 		os.Exit(2)
 	}
 	c, err := newClient()
@@ -57,6 +59,14 @@ func main() {
 		err = nodes(ctx, c)
 	case "pools":
 		err = pools(ctx, c)
+	case "top":
+		once := false
+		for _, a := range os.Args[2:] {
+			if a == "--once" {
+				once = true
+			}
+		}
+		err = runTop(c, once)
 	case "pod":
 		if len(os.Args) != 4 {
 			err = fmt.Errorf("usage: kubectl kore pod <namespace> <name>")

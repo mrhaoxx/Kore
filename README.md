@@ -176,6 +176,9 @@ make kubectl-kore && sudo cp bin/kubectl-kore /usr/local/bin/
 kubectl kore nodes                # 全集群账本：每节点独占/池/共享/各 zone 剩余
 kubectl kore pools                # 所有 CPU 池及成员数
 kubectl kore pod <ns> <name>      # 单 Pod 绑定详情（注解 + 节点账本交叉核对）
+kubectl kore top                  # 实时 TUI：每个核心一个格子（SMT 成列堆叠），
+                                  #   颜色+字母标注占用者（独占 Pod/池），2s 刷新
+kubectl kore top --once           # 单帧快照（脚本/截图用）
 
 # Prometheus（agent :9100，DaemonSet 已带 prometheus.io/scrape 注解）
 kore_cpus_exclusive / kore_cpus_pooled / kore_cpus_shared
