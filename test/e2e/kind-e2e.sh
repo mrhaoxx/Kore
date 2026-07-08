@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Kore kind E2E：需要本机 docker daemon 运行。用法：make e2e-kind
+set -euo pipefail
+cd "$(dirname "$0")/../.."
+
+CLUSTER=kore-e2e
+IMG_TAG=e2e
+step() { echo; echo "==> $*"; }
+
+cleanup() { kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true; }
+trap cleanup EXIT
+
+step "1/8 创建 kind 集群（containerd 开 NRI）"
+kind create cluster --name "$CLUSTER" --config test/e2e/kind-config.yaml --wait 120s
+
+step "2/8 构建并加载镜像"
+for c in agent scheduler operator; do
+  docker build --target "$c" -t "kore-$c:$IMG_TAG" .
+  kind load docker-image "kore-$c:$IMG_TAG" --name "$CLUSTER"
+done
+
+step "3/8 部署 CRD、namespace、RBAC、组件"
+kubectl apply -f deploy/crd -f deploy/namespace.yaml
+kubectl apply -f deploy/agent/rbac.yaml -f deploy/agent/configmap.yaml \
+  -f deploy/scheduler/rbac.yaml -f deploy/scheduler/configmap.yaml \
+  -f deploy/operator/rbac.yaml
+# kind 里镜像用本地 tag、关闭拉取
+for f in deploy/agent/daemonset.yaml deploy/scheduler/deployment.yaml deploy/operator/deployment.yaml; do
+  sed -e "s|ghcr.io/zjusct/kore-\(agent\|scheduler\|operator\):latest|kore-\1:$IMG_TAG|" \
+      -e '/image:/a\        imagePullPolicy: Never' "$f" | kubectl apply -f -
+done
+kubectl apply -f deploy/operator/webhook.yaml
+bash deploy/operator/gen-certs.sh
+
+step "4/8 等待组件就绪"
+kubectl -n kore-system rollout status ds/kore-agent --timeout=120s
+kubectl -n kore-system rollout status deploy/kore-scheduler --timeout=120s
+kubectl -n kore-system rollout status deploy/kore-operator --timeout=120s
+
+step "5/8 提交绑核 Pod 并等待 Running"
+kubectl apply -f test/e2e/testdata/pinned-pod.yaml
+kubectl wait --for=condition=Ready pod/kore-e2e-pinned --timeout=120s
+
+step "6/8 断言 cgroup 绑定与注解"
+CPUS=$(kubectl exec kore-e2e-pinned -- cat /sys/fs/cgroup/cpuset.cpus.effective)
+ANNO=$(kubectl get pod kore-e2e-pinned -o jsonpath='{.metadata.annotations.kore\.zjusct\.io/allocated-cpuset}')
+echo "cgroup cpuset=$CPUS annotation=$ANNO"
+[ -n "$CPUS" ] && [ "$CPUS" = "$ANNO" ] || { echo "FAIL: cpuset mismatch"; exit 1; }
+NCPUS=$(kubectl exec kore-e2e-pinned -- sh -c 'grep -c processor /proc/cpuinfo' || true)
+echo "container sees $NCPUS cpus (want 2 via cpuset)"
+
+step "7/8 三重防线：杀 agent 后新绑核 Pod 必须 Pending"
+kubectl -n kore-system delete ds/kore-agent
+sleep 20   # 等 Lease 过期 + 污点生效
+sed 's/kore-e2e-pinned/kore-e2e-pinned2/' test/e2e/testdata/pinned-pod.yaml | kubectl apply -f -
+sleep 15
+PHASE=$(kubectl get pod kore-e2e-pinned2 -o jsonpath='{.status.phase}')
+[ "$PHASE" = "Pending" ] || { echo "FAIL: pod phase=$PHASE, want Pending with agent down"; exit 1; }
+
+step "8/8 恢复 agent 后 Pod 应能跑起来"
+sed -e "s|ghcr.io/zjusct/kore-agent:latest|kore-agent:$IMG_TAG|" \
+    -e '/image:/a\        imagePullPolicy: Never' deploy/agent/daemonset.yaml | kubectl apply -f -
+kubectl -n kore-system rollout status ds/kore-agent --timeout=120s
+kubectl wait --for=condition=Ready pod/kore-e2e-pinned2 --timeout=180s
+
+echo; echo "=== KORE KIND E2E PASSED ==="

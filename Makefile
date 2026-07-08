@@ -1,7 +1,10 @@
 GOBIN := $(shell pwd)/bin
 CONTROLLER_GEN := $(GOBIN)/controller-gen
 
-.PHONY: build test fmt vet generate manifests
+.PHONY: build test fmt vet generate manifests e2e-kind
+
+e2e-kind:
+	bash test/e2e/kind-e2e.sh
 
 build:
 	go build ./...
