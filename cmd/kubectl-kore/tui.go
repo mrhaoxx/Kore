@@ -58,7 +58,12 @@ func cellChar(c Cell) string {
 // renderNode 渲染单节点块（内宽 width）：SMT 行对齐成列，每 8 列插空格。
 func renderNode(g NodeGrid, width int) string {
 	var b strings.Builder
-	b.WriteString(stNode.Render(g.Node) + "\n")
+	stats := fmt.Sprintf(" %d/%dC %d/%dN", g.UsedCPUs, g.TotalCPUs, g.UsedZones, g.TotalZones)
+	name := g.Node
+	if lipgloss.Width(name)+len(stats) > width {
+		name = name[:width-len(stats)-1] + "…"
+	}
+	b.WriteString(stNode.Render(name) + stHelp.Render(stats) + "\n")
 	for _, z := range g.Zones {
 		if len(z.Rows) == 0 {
 			continue
@@ -97,7 +102,7 @@ func renderNode(g NodeGrid, width int) string {
 		for _, e := range g.Legend {
 			sw := lipgloss.NewStyle().Background(lipgloss.Color(palette[int(e.Key-'A')%len(palette)])).
 				Foreground(lipgloss.Color("232")).Render(string(e.Key))
-			entry := sw + " " + e.Owner
+			entry := sw + " " + e.Owner + stHelp.Render(fmt.Sprintf(" %dC", e.CPUs))
 			if lipgloss.Width(line)+lipgloss.Width(entry)+2 > width && lipgloss.Width(line) > 1 {
 				b.WriteString(line + "\n")
 				line = " "

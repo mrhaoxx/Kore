@@ -36,12 +36,16 @@ type LegendEntry struct {
 	Key   byte
 	Owner string
 	Kind  CellKind
+	CPUs  int // 该占用者持有的核数
 }
 
 type NodeGrid struct {
 	Node   string
 	Zones  []ZoneGrid
 	Legend []LegendEntry
+	// 占用统计（Used = 独占+池，不含预留）
+	UsedCPUs, TotalCPUs   int
+	UsedZones, TotalZones int
 }
 
 // BuildNodeGrid 把 KNT 账本渲染为核心网格（纯函数，可测）。
@@ -55,7 +59,7 @@ func BuildNodeGrid(cr *v1alpha1.KoreNodeTopology) NodeGrid {
 		if err != nil {
 			return
 		}
-		e := LegendEntry{Key: byte('A' + len(legend)%26), Owner: name, Kind: kind}
+		e := LegendEntry{Key: byte('A' + len(legend)%26), Owner: name, Kind: kind, CPUs: cs.Size()}
 		legend = append(legend, e)
 		for _, c := range cs.List() {
 			owner[c] = &legend[len(legend)-1]
@@ -106,6 +110,20 @@ func BuildNodeGrid(cr *v1alpha1.KoreNodeTopology) NodeGrid {
 				row = append(row, mkCell(c))
 			}
 			zg.Rows = [][]Cell{row}
+		}
+		zoneUsed := false
+		for _, row := range zg.Rows {
+			for _, c := range row {
+				g.TotalCPUs++
+				if c.Kind == CellExclusive || c.Kind == CellPool {
+					g.UsedCPUs++
+					zoneUsed = true
+				}
+			}
+		}
+		g.TotalZones++
+		if zoneUsed {
+			g.UsedZones++
 		}
 		g.Zones = append(g.Zones, zg)
 	}
