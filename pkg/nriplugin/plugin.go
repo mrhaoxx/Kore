@@ -40,8 +40,9 @@ type Plugin struct {
 	rec   Recorder
 	rep   Reporter
 
-	shared  map[string]bool // 共享池容器 id（围栏对象）
-	updater func([]*api.ContainerUpdate) error
+	shared   map[string]bool            // 共享池容器 id（围栏对象）
+	poolCtrs map[string]map[string]bool // 池名 → 成员容器 id（resize 广播用）
+	updater  func([]*api.ContainerUpdate) error
 }
 
 func New(topo *topology.Topology, cfg *config.Config, pods PodGetter, rec Recorder, rep Reporter) (*Plugin, error) {
@@ -53,7 +54,7 @@ func New(topo *topology.Topology, cfg *config.Config, pods PodGetter, rec Record
 		topo: topo, cfg: cfg,
 		state: allocator.NewState(topo, reserved, cfg.SharedPoolMin),
 		pods:  pods, rec: rec, rep: rep,
-		shared: map[string]bool{},
+		shared: map[string]bool{}, poolCtrs: map[string]map[string]bool{},
 	}, nil
 }
 
@@ -84,7 +85,7 @@ func (p *Plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 		return p.fenceLocked(ctr), nil, nil
 	}
 	if req.Pool != "" {
-		return p.joinPoolLocked(kpod, req)
+		return p.joinPoolLocked(kpod, req, ctr)
 	}
 	ar, pinned := BuildAllocRequest(kpod, req, p.cfg, ctr.Name)
 	if !pinned {
@@ -106,10 +107,19 @@ func (p *Plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 }
 
 // joinPoolLocked 让 Pod 的容器加入（必要时创建）CPU 池。调用方须持锁。
-func (p *Plugin) joinPoolLocked(kpod *corev1.Pod, req *request.Request) (*api.ContainerAdjustment, []*api.ContainerUpdate, error) {
+func (p *Plugin) joinPoolLocked(kpod *corev1.Pod, req *request.Request, ctr *api.Container) (*api.ContainerAdjustment, []*api.ContainerUpdate, error) {
 	pr := allocator.PoolRequest{
 		Name: req.Pool, Size: req.PoolSize, PodUID: string(kpod.UID),
 		NUMAPolicy: req.NUMAPolicy, Placement: req.Placement,
+		PodCreated: kpod.CreationTimestamp.Time,
+	}
+	var prev *allocator.PoolInfo
+	for _, pl := range p.state.Pools() {
+		if pl.Name == req.Pool {
+			cp := pl
+			prev = &cp
+			break
+		}
 	}
 	if pr.Placement == "" {
 		pr.Placement = request.Placement(p.cfg.DefaultPlacement)
@@ -130,7 +140,24 @@ func (p *Plugin) joinPoolLocked(kpod *corev1.Pod, req *request.Request) (*api.Co
 	adj.AddAnnotation(request.AnnoAllocated, info.CPUs.String())
 	p.rec.SetPodAnnotation(kpod, request.AnnoAllocated, info.CPUs.String())
 	p.rep.Report(allocator.BuildStatus(p.state))
-	return adj, p.shrinkSharedLocked(), nil
+
+	updates := p.shrinkSharedLocked()
+	if prev != nil && !prev.CPUs.Equals(info.CPUs) { // 在线扩缩容 → 广播全体成员
+		mems := MemsFor(req.MemoryPolicy, info.NUMA, p.topo)
+		for id := range p.poolCtrs[req.Pool] {
+			u := &api.ContainerUpdate{}
+			u.SetContainerId(id)
+			u.SetLinuxCPUSetCPUs(info.CPUs.String())
+			u.SetLinuxCPUSetMems(mems)
+			u.IgnoreFailure = true
+			updates = append(updates, u)
+		}
+	}
+	if p.poolCtrs[req.Pool] == nil {
+		p.poolCtrs[req.Pool] = map[string]bool{}
+	}
+	p.poolCtrs[req.Pool][ctr.Id] = true
+	return adj, updates, nil
 }
 
 // fenceLocked 把非绑核容器围栏进共享池。调用方须持锁。

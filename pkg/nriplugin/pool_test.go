@@ -3,6 +3,7 @@ package nriplugin
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/containerd/nri/pkg/api"
 	corev1 "k8s.io/api/core/v1"
@@ -98,6 +99,40 @@ func TestSynchronizeRestoresPool(t *testing.T) {
 	}
 	if got := adjCpus(adj); got != "4-5" { // zone0 仅剩 {3} 放不下 → zone1
 		t.Fatalf("exclusive must avoid pool: %q", got)
+	}
+}
+
+func TestPoolResizeBroadcast(t *testing.T) {
+	p1, p2 := poolPod("m1", "uid-m1"), poolPod("m2", "uid-m2")
+	p3 := poolPod("m3", "uid-m3")
+	p3.Annotations[request.AnnoPoolSize] = "3"
+	p3.CreationTimestamp = metav1.Time{Time: time.Now()} // 晚于池创建（其余为零值）
+	p, _, _ := newTestPlugin(t, p1, p2, p3)
+
+	sb1 := &api.PodSandbox{Id: "sb-m1", Name: "m1", Uid: "uid-m1", Namespace: "default", Annotations: poolAnnos()}
+	sb2 := &api.PodSandbox{Id: "sb-m2", Name: "m2", Uid: "uid-m2", Namespace: "default", Annotations: poolAnnos()}
+	if _, _, err := p.CreateContainer(context.Background(), sb1, ctr("c1", sb1.Id, "app")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := p.CreateContainer(context.Background(), sb2, ctr("c2", sb2.Id, "app")); err != nil {
+		t.Fatal(err)
+	}
+	sb3annos := poolAnnos()
+	sb3annos[request.AnnoPoolSize] = "3"
+	sb3 := &api.PodSandbox{Id: "sb-m3", Name: "m3", Uid: "uid-m3", Namespace: "default", Annotations: sb3annos}
+	adj3, updates, err := p.CreateContainer(context.Background(), sb3, ctr("c3", sb3.Id, "app"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := adjCpus(adj3); got != "1-3" { // 2 核池就近扩到 3
+		t.Fatalf("resized pool = %q", got)
+	}
+	got := map[string]string{}
+	for _, u := range updates {
+		got[u.GetContainerId()] = updCpus(u)
+	}
+	if got["c1"] != "1-3" || got["c2"] != "1-3" {
+		t.Fatalf("resize must broadcast to existing members: %v", got)
 	}
 }
 

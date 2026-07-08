@@ -26,6 +26,9 @@ func (p *Plugin) RemovePodSandbox(ctx context.Context, pod *api.PodSandbox) erro
 func (p *Plugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) error {
 	p.mu.Lock()
 	delete(p.shared, ctr.Id)
+	for _, ids := range p.poolCtrs {
+		delete(ids, ctr.Id)
+	}
 	p.mu.Unlock()
 	return nil
 }
@@ -74,6 +77,10 @@ func (p *Plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, contai
 				if err := p.state.RestorePoolMember(poolName, cpus, pod.Uid); err != nil {
 					return nil, err
 				}
+				if p.poolCtrs[poolName] == nil {
+					p.poolCtrs[poolName] = map[string]bool{}
+				}
+				p.poolCtrs[poolName][c.Id] = true
 				continue
 			}
 			if err := p.restore(pod, c, cs); err != nil {
@@ -122,7 +129,7 @@ func (p *Plugin) remediateLocked(pod *api.PodSandbox, c *api.Container) *api.Con
 	}
 	if req.Pool != "" { // 该入池未入池
 		if p.cfg.Remediation == "repair" {
-			adj, _, jerr := p.joinPoolLocked(kpod, req)
+			adj, _, jerr := p.joinPoolLocked(kpod, req, c)
 			if jerr != nil {
 				p.rec.Event(kpod, corev1.EventTypeWarning, "KoreUnboundContainer",
 					fmt.Sprintf("pool member %s is not in pool %q; repair failed: %v", c.Name, req.Pool, jerr))
