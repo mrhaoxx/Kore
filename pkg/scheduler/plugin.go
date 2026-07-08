@@ -1,0 +1,255 @@
+package scheduler
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	fwk "k8s.io/kube-scheduler/framework"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
+
+	v1alpha1 "github.com/zjusct/kore/pkg/apis/kore/v1alpha1"
+	"github.com/zjusct/kore/pkg/request"
+)
+
+const (
+	Name                               = "Kore"
+	stateKey              fwk.StateKey = "kore.zjusct.io/state"
+	leaseNamespace                     = "kore-system"
+	defaultReservationTTL              = 5 * time.Minute
+)
+
+type Deps struct {
+	ListTopologies     func(ctx context.Context) ([]v1alpha1.KoreNodeTopology, error)
+	LeaseFresh         func(node string) bool
+	PatchPodAnnotation func(ctx context.Context, ns, name, key, value string) error
+}
+
+type nodeSnap struct {
+	zones   []ZoneCap
+	leaseOK bool
+	found   bool
+}
+
+type koreState struct {
+	req    *request.Request
+	need   int
+	byNode map[string]nodeSnap
+}
+
+func (s *koreState) Clone() fwk.StateData { return s }
+
+type Kore struct {
+	deps  Deps
+	cache *Cache
+}
+
+var (
+	_ fwk.PreFilterPlugin = &Kore{}
+	_ fwk.FilterPlugin    = &Kore{}
+	_ fwk.ScorePlugin     = &Kore{}
+	_ fwk.ReservePlugin   = &Kore{}
+	_ fwk.PreBindPlugin   = &Kore{}
+)
+
+func NewWithDeps(deps Deps, cache *Cache) *Kore { return &Kore{deps: deps, cache: cache} }
+
+func (k *Kore) Name() string { return Name }
+
+func (k *Kore) PreFilter(ctx context.Context, state fwk.CycleState, pod *corev1.Pod, _ []fwk.NodeInfo) (*fwk.PreFilterResult, *fwk.Status) {
+	req, err := request.ParsePod(pod)
+	if err != nil {
+		return nil, fwk.NewStatus(fwk.UnschedulableAndUnresolvable, "kore: "+err.Error())
+	}
+	if req == nil {
+		return nil, fwk.NewStatus(fwk.Skip)
+	}
+	need := 0
+	for _, c := range req.Containers {
+		need += c.CPUs
+	}
+	crs, err := k.deps.ListTopologies(ctx)
+	if err != nil {
+		return nil, fwk.AsStatus(err)
+	}
+	st := &koreState{req: req, need: need, byNode: map[string]nodeSnap{}}
+	for i := range crs {
+		cr := &crs[i]
+		// CR 已体现的分配 → 清对应预占，避免双重扣减
+		uids := map[string]bool{}
+		for _, a := range cr.Status.Allocations {
+			uids[a.PodUID] = true
+		}
+		k.cache.MarkAllocated(cr.Name, uids)
+
+		zones, zerr := ZonesFromCR(cr)
+		if zerr != nil {
+			continue // 坏 CR 视同节点无拓扑
+		}
+		zones = Deduct(zones, k.cache.ByNode(cr.Name))
+		st.byNode[cr.Name] = nodeSnap{zones: zones, leaseOK: k.deps.LeaseFresh(cr.Name), found: true}
+	}
+	state.Write(stateKey, st)
+	return nil, nil
+}
+
+func (k *Kore) PreFilterExtensions() fwk.PreFilterExtensions { return nil }
+
+func getState(state fwk.CycleState) (*koreState, bool) {
+	v, err := state.Read(stateKey)
+	if err != nil {
+		return nil, false
+	}
+	st, ok := v.(*koreState)
+	return st, ok
+}
+
+func (k *Kore) Filter(ctx context.Context, state fwk.CycleState, pod *corev1.Pod, nodeInfo fwk.NodeInfo) *fwk.Status {
+	st, ok := getState(state)
+	if !ok {
+		return nil
+	}
+	node := nodeInfo.Node().Name
+	ns := st.byNode[node]
+	if !ns.found {
+		return fwk.NewStatus(fwk.Unschedulable, "kore: no topology reported for node")
+	}
+	if !ns.leaseOK {
+		return fwk.NewStatus(fwk.Unschedulable, "kore: agent lease expired on node")
+	}
+	if st.req.Explicit != nil {
+		if !FitExplicit(ns.zones, *st.req.Explicit) {
+			return fwk.NewStatus(fwk.Unschedulable, "kore: explicit cpuset not free on node")
+		}
+		return nil
+	}
+	// 调度器不知道 agent 的 ConfigMap 默认值；按注解未写 logical 即 full-core 保守判断
+	if st.req.SMTPolicy != request.SMTLogical && !AlignFullCore(ns.zones, st.need) {
+		return fwk.NewStatus(fwk.Unschedulable, "kore: cpu count not aligned to full cores on SMT node")
+	}
+	switch st.req.NUMAPolicy {
+	case request.NUMASpread:
+		if !FitSpread(ns.zones, st.need) {
+			return fwk.NewStatus(fwk.Unschedulable, "kore: insufficient free cpus for spread")
+		}
+	case request.NUMAPreferred:
+		if _, ok := FitPreferred(ns.zones, st.need); !ok {
+			return fwk.NewStatus(fwk.Unschedulable, "kore: insufficient free cpus")
+		}
+	default:
+		if _, ok := FitSingle(ns.zones, st.need); !ok {
+			return fwk.NewStatus(fwk.Unschedulable, "kore: no NUMA zone with enough free cpus")
+		}
+	}
+	return nil
+}
+
+func (k *Kore) Score(ctx context.Context, state fwk.CycleState, pod *corev1.Pod, nodeInfo fwk.NodeInfo) (int64, *fwk.Status) {
+	st, ok := getState(state)
+	if !ok {
+		return 0, nil
+	}
+	ns := st.byNode[nodeInfo.Node().Name]
+	if !ns.found {
+		return 0, nil
+	}
+	return ScoreFit(ns.zones, st.req.NUMAPolicy, st.req.Explicit != nil, st.need), nil
+}
+
+func (k *Kore) ScoreExtensions() fwk.ScoreExtensions { return nil }
+
+func (k *Kore) Reserve(ctx context.Context, state fwk.CycleState, pod *corev1.Pod, nodeName string) *fwk.Status {
+	st, ok := getState(state)
+	if !ok {
+		return nil
+	}
+	ns := st.byNode[nodeName]
+	r := Reservation{PodUID: string(pod.UID), Node: nodeName, Zone: -1, Count: st.need, Explicit: st.req.Explicit}
+	if st.req.Explicit == nil {
+		switch st.req.NUMAPolicy {
+		case request.NUMASpread:
+			// zone 保持 -1
+		case request.NUMAPreferred:
+			if z, ok := FitPreferred(ns.zones, st.need); ok {
+				r.Zone = z
+			}
+		default:
+			z, fits := FitSingle(ns.zones, st.need)
+			if !fits {
+				return fwk.NewStatus(fwk.Unschedulable, "kore: capacity changed during scheduling cycle")
+			}
+			r.Zone = z
+		}
+	}
+	k.cache.Add(r)
+	return nil
+}
+
+func (k *Kore) Unreserve(ctx context.Context, state fwk.CycleState, pod *corev1.Pod, nodeName string) {
+	k.cache.Remove(string(pod.UID))
+}
+
+func (k *Kore) PreBindPreFlight(ctx context.Context, state fwk.CycleState, pod *corev1.Pod, nodeName string) (*fwk.PreBindPreFlightResult, *fwk.Status) {
+	if _, ok := getState(state); !ok {
+		return nil, fwk.NewStatus(fwk.Skip)
+	}
+	return nil, nil
+}
+
+func (k *Kore) PreBind(ctx context.Context, state fwk.CycleState, pod *corev1.Pod, nodeName string) *fwk.Status {
+	if _, ok := getState(state); !ok {
+		return nil
+	}
+	r, ok := k.cache.Get(string(pod.UID))
+	if !ok || r.Zone < 0 {
+		return nil // spread/explicit：agent 不需要 reserved-numa
+	}
+	if err := k.deps.PatchPodAnnotation(ctx, pod.Namespace, pod.Name, request.AnnoReservedNUMA, strconv.Itoa(r.Zone)); err != nil {
+		return fwk.AsStatus(err)
+	}
+	return nil
+}
+
+// New 是 scheduler framework 的插件工厂。
+func New(ctx context.Context, _ runtime.Object, h fwk.Handle) (fwk.Plugin, error) {
+	sch := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(sch); err != nil {
+		return nil, err
+	}
+	crc, err := ctrlclient.New(h.KubeConfig(), ctrlclient.Options{Scheme: sch})
+	if err != nil {
+		return nil, err
+	}
+	leaseLister := h.SharedInformerFactory().Coordination().V1().Leases().Lister()
+	deps := Deps{
+		ListTopologies: func(ctx context.Context) ([]v1alpha1.KoreNodeTopology, error) {
+			var l v1alpha1.KoreNodeTopologyList
+			if err := crc.List(ctx, &l); err != nil {
+				return nil, err
+			}
+			return l.Items, nil
+		},
+		LeaseFresh: func(node string) bool {
+			l, err := leaseLister.Leases(leaseNamespace).Get("kore-agent-" + node)
+			if err != nil || l.Spec.RenewTime == nil {
+				return false
+			}
+			d := 15 * time.Second
+			if l.Spec.LeaseDurationSeconds != nil {
+				d = time.Duration(*l.Spec.LeaseDurationSeconds) * time.Second
+			}
+			return time.Since(l.Spec.RenewTime.Time) <= d
+		},
+		PatchPodAnnotation: func(ctx context.Context, ns, name, key, value string) error {
+			patch := []byte(fmt.Sprintf(`{"metadata":{"annotations":{%q:%q}}}`, key, value))
+			_, err := h.ClientSet().CoreV1().Pods(ns).Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{})
+			return err
+		},
+	}
+	return NewWithDeps(deps, NewCache(defaultReservationTTL)), nil
+}
