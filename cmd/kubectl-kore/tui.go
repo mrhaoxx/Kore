@@ -3,12 +3,16 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/watch"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/zjusct/kore/pkg/apis/kore/v1alpha1"
@@ -25,6 +29,8 @@ var (
 	stZone     = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 	stHelp     = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 )
+
+const blockWidth = 46 // 单节点块内宽：numa 标签 + 32 格 + 组间空格
 
 func cellStyle(c Cell) lipgloss.Style {
 	switch c.Kind {
@@ -49,7 +55,7 @@ func cellChar(c Cell) string {
 	}
 }
 
-// renderNode 渲染单节点：每 zone 一块，SMT 行对齐成列，每 8 列插空格。
+// renderNode 渲染单节点块（内宽 width）：SMT 行对齐成列，每 8 列插空格。
 func renderNode(g NodeGrid, width int) string {
 	var b strings.Builder
 	b.WriteString(stNode.Render(g.Node) + "\n")
@@ -60,12 +66,10 @@ func renderNode(g NodeGrid, width int) string {
 		cols := len(z.Rows[0])
 		label := fmt.Sprintf("numa%d ", z.ID)
 		pad := strings.Repeat(" ", len(label))
-		// 按宽度分片（每格 1 字符 + 每 8 列 1 空格）
-		chunk := width - len(label) - 4
-		if chunk < 16 {
-			chunk = 16
+		perLine := (width - len(label)) * 8 / 9
+		if perLine < 8 {
+			perLine = 8
 		}
-		perLine := chunk * 8 / 9
 		for start := 0; start < cols; start += perLine {
 			end := start + perLine
 			if end > cols {
@@ -85,76 +89,89 @@ func renderNode(g NodeGrid, width int) string {
 				}
 				b.WriteString("\n")
 			}
-			if len(z.Rows) > 1 {
-				b.WriteString("\n") // SMT 组间空行
-			}
 		}
 	}
+	// 图例：按块宽贪心换行
 	if len(g.Legend) > 0 {
-		var parts []string
+		line := " "
 		for _, e := range g.Legend {
 			sw := lipgloss.NewStyle().Background(lipgloss.Color(palette[int(e.Key-'A')%len(palette)])).
 				Foreground(lipgloss.Color("232")).Render(string(e.Key))
-			parts = append(parts, sw+" "+e.Owner)
+			entry := sw + " " + e.Owner
+			if lipgloss.Width(line)+lipgloss.Width(entry)+2 > width && lipgloss.Width(line) > 1 {
+				b.WriteString(line + "\n")
+				line = " "
+			}
+			line += " " + entry
 		}
-		b.WriteString("  " + strings.Join(parts, "   ") + "\n")
+		if strings.TrimSpace(line) != "" {
+			b.WriteString(line + "\n")
+		}
 	}
 	return b.String()
 }
 
+// renderAll：节点块横向流式平铺（每行 width/blockWidth 列）。
 func renderAll(crs []v1alpha1.KoreNodeTopology, width int) string {
 	sort.Slice(crs, func(i, j int) bool { return crs[i].Name < crs[j].Name })
-	var b strings.Builder
-	for i := range crs {
-		b.WriteString(renderNode(BuildNodeGrid(&crs[i]), width))
-		b.WriteString("\n")
+	perRow := width / (blockWidth + 2)
+	if perRow < 1 {
+		perRow = 1
 	}
-	return b.String()
+	blockSt := lipgloss.NewStyle().Width(blockWidth).MarginRight(2)
+	var rows []string
+	for start := 0; start < len(crs); start += perRow {
+		end := start + perRow
+		if end > len(crs) {
+			end = len(crs)
+		}
+		var blocks []string
+		for i := start; i < end; i++ {
+			blocks = append(blocks, blockSt.Render(renderNode(BuildNodeGrid(&crs[i]), blockWidth)))
+		}
+		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, blocks...))
+	}
+	return strings.Join(rows, "\n")
 }
 
-// --- bubbletea ---
+// --- bubbletea（watch 事件驱动，非轮询）---
 
-type tickMsg time.Time
-type dataMsg []v1alpha1.KoreNodeTopology
+type snapshotMsg []v1alpha1.KoreNodeTopology
+type updateMsg *v1alpha1.KoreNodeTopology
+type deleteMsg string
 type errMsg error
 
 type model struct {
-	c       ctrlclient.Client
-	crs     []v1alpha1.KoreNodeTopology
+	items   map[string]v1alpha1.KoreNodeTopology
 	err     error
 	width   int
 	height  int
 	scroll  int
-	content []string // 渲染后的行
+	content []string
+	events  int
 }
 
-func fetchCmd(c ctrlclient.Client) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		var l v1alpha1.KoreNodeTopologyList
-		if err := c.List(ctx, &l); err != nil {
-			return errMsg(err)
-		}
-		return dataMsg(l.Items)
-	}
-}
-
-func tick() tea.Cmd {
-	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
-}
-
-func (m model) Init() tea.Cmd { return tea.Batch(fetchCmd(m.c), tick()) }
+func (m model) Init() tea.Cmd { return nil }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.rebuild()
-	case tickMsg:
-		return m, tea.Batch(fetchCmd(m.c), tick())
-	case dataMsg:
-		m.crs, m.err = msg, nil
+	case snapshotMsg:
+		m.items = map[string]v1alpha1.KoreNodeTopology{}
+		for _, cr := range msg {
+			m.items[cr.Name] = cr
+		}
+		m.err = nil
+		m.rebuild()
+	case updateMsg:
+		m.items[msg.Name] = *msg
+		m.events++
+		m.rebuild()
+	case deleteMsg:
+		delete(m.items, string(msg))
+		m.events++
 		m.rebuild()
 	case errMsg:
 		m.err = msg
@@ -178,9 +195,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *model) rebuild() {
 	w := m.width
 	if w <= 0 {
-		w = 100
+		w = 120
 	}
-	m.content = strings.Split(renderAll(m.crs, w), "\n")
+	crs := make([]v1alpha1.KoreNodeTopology, 0, len(m.items))
+	for _, cr := range m.items {
+		crs = append(crs, cr)
+	}
+	m.content = strings.Split(renderAll(crs, w), "\n")
 }
 
 func (m model) View() string {
@@ -199,11 +220,50 @@ func (m model) View() string {
 	if start > end {
 		start = end
 	}
-	view := strings.Join(m.content[start:end], "\n")
-	return view + "\n" + stHelp.Render("↑/↓ 滚动 · q 退出 · 2s 自动刷新")
+	return strings.Join(m.content[start:end], "\n") + "\n" +
+		stHelp.Render(fmt.Sprintf("watch 事件驱动（已收 %d 事件）· ↑/↓ 滚动 · q 退出", m.events))
 }
 
-func runTop(c ctrlclient.Client, once bool) error {
+// watchLoop：list 建快照 → watch 增量推送；断流自动重连（重列以对账）。
+func watchLoop(ctx context.Context, wc ctrlclient.WithWatch, p *tea.Program) {
+	for ctx.Err() == nil {
+		var l v1alpha1.KoreNodeTopologyList
+		lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		err := wc.List(lctx, &l)
+		cancel()
+		if err != nil {
+			p.Send(errMsg(err))
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		p.Send(snapshotMsg(l.Items))
+
+		w, err := wc.Watch(ctx, &v1alpha1.KoreNodeTopologyList{},
+			&ctrlclient.ListOptions{Raw: &metav1.ListOptions{ResourceVersion: l.ResourceVersion}})
+		if err != nil {
+			p.Send(errMsg(err))
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		for ev := range w.ResultChan() {
+			switch ev.Type {
+			case watch.Added, watch.Modified:
+				if cr, ok := ev.Object.(*v1alpha1.KoreNodeTopology); ok {
+					p.Send(updateMsg(cr))
+				}
+			case watch.Deleted:
+				if cr, ok := ev.Object.(*v1alpha1.KoreNodeTopology); ok {
+					p.Send(deleteMsg(cr.Name))
+				}
+			case watch.Error:
+				// 跳出重列（resourceVersion 过期等）
+			}
+		}
+		w.Stop() // 通道关闭 → 外层循环重列重连
+	}
+}
+
+func runTop(c ctrlclient.Client, wc ctrlclient.WithWatch, once bool) error {
 	if once { // 单帧快照（无 TTY 环境/截图用）
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -211,9 +271,17 @@ func runTop(c ctrlclient.Client, once bool) error {
 		if err := c.List(ctx, &l); err != nil {
 			return err
 		}
-		fmt.Print(renderAll(l.Items, 100))
+		width := 120
+		if v, err := strconv.Atoi(os.Getenv("COLUMNS")); err == nil && v > 40 {
+			width = v
+		}
+		fmt.Println(renderAll(l.Items, width))
 		return nil
 	}
-	_, err := tea.NewProgram(model{c: c}, tea.WithAltScreen()).Run()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p := tea.NewProgram(model{items: map[string]v1alpha1.KoreNodeTopology{}}, tea.WithAltScreen())
+	go watchLoop(ctx, wc, p)
+	_, err := p.Run()
 	return err
 }

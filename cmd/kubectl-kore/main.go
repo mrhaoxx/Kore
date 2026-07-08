@@ -48,7 +48,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: kubectl kore nodes|pools|top [--once]|pod <ns> <name>")
 		os.Exit(2)
 	}
-	c, err := newClient()
+	c, wc, err := newClient()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -66,7 +66,7 @@ func main() {
 				once = true
 			}
 		}
-		err = runTop(c, once)
+		err = runTop(c, wc, once)
 	case "pod":
 		if len(os.Args) != 4 {
 			err = fmt.Errorf("usage: kubectl kore pod <namespace> <name>")
@@ -82,21 +82,29 @@ func main() {
 	}
 }
 
-func newClient() (ctrlclient.Client, error) {
+func newClient() (ctrlclient.Client, ctrlclient.WithWatch, error) {
 	cfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
 		clientcmd.NewDefaultClientConfigLoadingRules(),
 		&clientcmd.ConfigOverrides{CurrentContext: contextFlag}).ClientConfig()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	sch := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(sch); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := v1alpha1.AddToScheme(sch); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return ctrlclient.New(cfg, ctrlclient.Options{Scheme: sch})
+	c, err := ctrlclient.New(cfg, ctrlclient.Options{Scheme: sch})
+	if err != nil {
+		return nil, nil, err
+	}
+	wc, err := ctrlclient.NewWithWatch(cfg, ctrlclient.Options{Scheme: sch})
+	if err != nil {
+		return nil, nil, err
+	}
+	return c, wc, nil
 }
 
 func size(cpulist string) int {
