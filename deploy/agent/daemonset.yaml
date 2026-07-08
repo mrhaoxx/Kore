@@ -9,6 +9,9 @@ spec:
   template:
     metadata:
       labels: { app: kore-agent }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
     spec:
       serviceAccountName: kore-agent
       priorityClassName: system-node-critical
@@ -25,6 +28,8 @@ spec:
         image: docker.io/mrhaoxx/kore-agent:v0.2.1   # 按实际镜像仓库修改
         args:
         - --config=/etc/kore/config.yaml
+        ports:
+        - { containerPort: 9100, name: metrics }
         env:
         - name: NODE_NAME
           valueFrom:

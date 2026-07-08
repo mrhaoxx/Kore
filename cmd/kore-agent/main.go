@@ -11,8 +11,11 @@ import (
 	"syscall"
 	"time"
 
+	"net/http"
+
 	"github.com/containerd/nri/pkg/api"
 	"github.com/containerd/nri/pkg/stub"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
@@ -33,6 +36,7 @@ import (
 	"github.com/zjusct/kore/pkg/agent/reporter"
 	v1alpha1 "github.com/zjusct/kore/pkg/apis/kore/v1alpha1"
 	"github.com/zjusct/kore/pkg/deviceplugin"
+	"github.com/zjusct/kore/pkg/metrics"
 	"github.com/zjusct/kore/pkg/nriplugin"
 	"github.com/zjusct/kore/pkg/topology"
 )
@@ -143,6 +147,12 @@ func run(sysfs, nodeName, cfgPath, namespace, kubeletDir string) error {
 	}
 	go renewer.Run(ctx, 5*time.Second)
 
+	go func() { // Prometheus 指标
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", promhttp.Handler())
+		_ = (&http.Server{Addr: ":9100", Handler: mux}).ListenAndServe()
+	}()
+
 	// 不在此处上报初始状态：NRI 注册时 Synchronize 必然执行并上报恢复后的
 	// 权威账本；启动期的空状态报告会与之竞态，曾导致 CR 账本被清空。
 	log.Printf("kore-agent up on %s: %d zones, %d cpus", nodeName, len(topo.Zones), topo.AllCPUs().Size())
@@ -201,6 +211,7 @@ func newAsyncReporter(ctx context.Context, r *reporter.Reporter) *asyncReporter 
 			case <-ctx.Done():
 				return
 			case st := <-ar.ch:
+				metrics.UpdateFromStatus(st)
 				c, cancel := context.WithTimeout(ctx, 10*time.Second)
 				_ = ar.r.Report(c, st)
 				cancel()

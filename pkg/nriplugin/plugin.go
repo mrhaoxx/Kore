@@ -12,6 +12,7 @@ import (
 	"github.com/zjusct/kore/pkg/agent/config"
 	"github.com/zjusct/kore/pkg/allocator"
 	v1alpha1 "github.com/zjusct/kore/pkg/apis/kore/v1alpha1"
+	"github.com/zjusct/kore/pkg/metrics"
 	"github.com/zjusct/kore/pkg/request"
 	"github.com/zjusct/kore/pkg/topology"
 )
@@ -93,6 +94,7 @@ func (p *Plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 	}
 	a, err := p.state.Allocate(*ar)
 	if err != nil {
+		metrics.AllocFailure("pin")
 		p.rec.Event(kpod, corev1.EventTypeWarning, "KoreAllocationFailed", err.Error())
 		return nil, nil, fmt.Errorf("kore: %w", err)
 	}
@@ -131,6 +133,7 @@ func (p *Plugin) joinPoolLocked(kpod *corev1.Pod, req *request.Request, ctr *api
 	}
 	info, err := p.state.JoinPool(pr)
 	if err != nil {
+		metrics.AllocFailure("pool")
 		p.rec.Event(kpod, corev1.EventTypeWarning, "KorePoolFailed", err.Error())
 		return nil, nil, fmt.Errorf("kore: %w", err)
 	}

@@ -10,6 +10,7 @@ import (
 	"k8s.io/utils/cpuset"
 
 	"github.com/zjusct/kore/pkg/allocator"
+	"github.com/zjusct/kore/pkg/metrics"
 	"github.com/zjusct/kore/pkg/request"
 )
 
@@ -154,6 +155,7 @@ func (p *Plugin) remediateLocked(pod *api.PodSandbox, c *api.Container) *api.Con
 		return nil
 	}
 	if p.cfg.Remediation == "repair" {
+		metrics.Remediation("repair")
 		a, aerr := p.state.Allocate(*ar)
 		if aerr != nil {
 			p.rec.Event(kpod, corev1.EventTypeWarning, "KoreUnboundContainer",
@@ -170,6 +172,7 @@ func (p *Plugin) remediateLocked(pod *api.PodSandbox, c *api.Container) *api.Con
 		return u
 	}
 	// strict：杀掉重建，绝不允许无绑定运行
+	metrics.Remediation("strict")
 	p.rec.Event(kpod, corev1.EventTypeWarning, "KoreUnboundContainer",
 		fmt.Sprintf("container %s was running unpinned (agent was down at creation); deleting pod for rebind", c.Name))
 	p.rec.DeletePod(pod.Namespace, pod.Name)

@@ -18,7 +18,7 @@ import (
 const schedulerName = "kore-scheduler"
 
 // MutatePod 返回注入后的 Pod 深拷贝：设置 schedulerName、给绑核容器注入扩展资源
-//（kubelet 准入门闩，spec §6 防线 2）。非 kore Pod 原样返回。
+// （kubelet 准入门闩，spec §6 防线 2）。非 kore Pod 原样返回。
 func MutatePod(pod *corev1.Pod) (*corev1.Pod, error) {
 	req, err := request.ParsePod(pod)
 	if err != nil {
