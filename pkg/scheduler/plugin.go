@@ -207,6 +207,13 @@ func (k *Kore) Score(ctx context.Context, state fwk.CycleState, pod *corev1.Pod,
 		if _, ok := ns.pools[st.req.Pool]; ok {
 			return 100, nil // 已有池的节点最优（成员聚合）
 		}
+		// 建池上限 99：保证“跟随已有池”严格胜过“新建池”（否则恰好整 zone
+		// 命中的建池节点会打平 100，成员被摊到多节点裂成同名多池）
+		if s := ScoreFit(ns.zones, st.req.NUMAPolicy, false, st.need); s > 99 {
+			return 99, nil
+		} else {
+			return s, nil
+		}
 	}
 	return ScoreFit(ns.zones, st.req.NUMAPolicy, st.req.Explicit != nil, st.need), nil
 }

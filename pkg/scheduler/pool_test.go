@@ -56,6 +56,13 @@ func TestPoolFollowOrCreate(t *testing.T) {
 	if sFollow != 100 || sFollow <= sCreate {
 		t.Fatalf("follow=%d create=%d", sFollow, sCreate)
 	}
+	// 恰好整 zone 命中的建池节点也不得打平跟随（上限 99）
+	e2 := newEnv(t, topoCR("exact", "0-3"))
+	pod4 := poolSchedPod("demo", "4")
+	st2 := runPreFilter(t, e2.k, pod4)
+	if s, _ := e2.k.Score(context.Background(), st2, pod4, nodeInfo("exact")); s != 99 {
+		t.Fatalf("create score must cap at 99, got %d", s)
+	}
 }
 
 func TestPoolSizeMismatchRejected(t *testing.T) {
