@@ -1,0 +1,21 @@
+# 需要 cert-manager。没有的话用 gen-certs.sh。
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: kore-selfsigned
+  namespace: kore-system
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: kore-webhook
+  namespace: kore-system
+spec:
+  secretName: kore-webhook-certs
+  dnsNames:
+  - kore-webhook.kore-system.svc
+  - kore-webhook.kore-system.svc.cluster.local
+  issuerRef:
+    name: kore-selfsigned

@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kore-agent
+  namespace: kore-system
+spec:
+  selector:
+    matchLabels: { app: kore-agent }
+  template:
+    metadata:
+      labels: { app: kore-agent }
+    spec:
+      serviceAccountName: kore-agent
+      priorityClassName: system-node-critical
+      # 只在计算节点跑的话取消注释并按需修改：
+      # nodeSelector:
+      #   node-role.kubernetes.io/compute: ""
+      tolerations:
+      - key: kore.zjusct.io/agent-down   # 必须容忍自己的失活污点，否则起不来
+        operator: Exists
+      containers:
+      - name: agent
+        image: ghcr.io/zjusct/kore-agent:latest   # 按实际镜像仓库修改
+        args:
+        - --config=/etc/kore/config.yaml
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef: { fieldPath: spec.nodeName }
+        securityContext:
+          privileged: true    # 写 NRI/device-plugin socket 与容器 cgroup 需要
+        volumeMounts:
+        - { name: nri, mountPath: /var/run/nri }
+        - { name: device-plugins, mountPath: /var/lib/kubelet/device-plugins }
+        - { name: sysfs, mountPath: /sys, readOnly: true }
+        - { name: config, mountPath: /etc/kore, readOnly: true }
+      volumes:
+      - name: nri
+        hostPath: { path: /var/run/nri, type: Directory }
+      - name: device-plugins
+        hostPath: { path: /var/lib/kubelet/device-plugins, type: Directory }
+      - name: sysfs
+        hostPath: { path: /sys, type: Directory }
+      - name: config
+        configMap: { name: kore-agent-config }

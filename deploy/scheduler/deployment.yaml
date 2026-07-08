@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kore-scheduler
+  namespace: kore-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: kore-scheduler }
+  template:
+    metadata:
+      labels: { app: kore-scheduler }
+    spec:
+      serviceAccountName: kore-scheduler
+      containers:
+      - name: scheduler
+        image: ghcr.io/zjusct/kore-scheduler:latest   # 按实际镜像仓库修改
+        args:
+        - --config=/etc/kore/config.yaml
+        - --authentication-skip-lookup=true
+        volumeMounts:
+        - { name: config, mountPath: /etc/kore, readOnly: true }
+      volumes:
+      - name: config
+        configMap: { name: kore-scheduler-config }

@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kore-operator
+  namespace: kore-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: kore-operator }
+  template:
+    metadata:
+      labels: { app: kore-operator }
+    spec:
+      serviceAccountName: kore-operator
+      containers:
+      - name: operator
+        image: ghcr.io/zjusct/kore-operator:latest   # 按实际镜像仓库修改
+        ports:
+        - { containerPort: 9443, name: webhook }
+        volumeMounts:
+        - name: certs
+          mountPath: /tmp/k8s-webhook-server/serving-certs
+          readOnly: true
+      volumes:
+      - name: certs
+        secret: { secretName: kore-webhook-certs }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kore-webhook
+  namespace: kore-system
+spec:
+  selector: { app: kore-operator }
+  ports:
+  - port: 443
+    targetPort: 9443
