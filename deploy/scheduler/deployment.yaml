@@ -14,7 +14,7 @@ spec:
       serviceAccountName: kore-scheduler
       containers:
       - name: scheduler
-        image: ghcr.io/zjusct/kore-scheduler:latest   # 按实际镜像仓库修改
+        image: docker.io/mrhaoxx/kore-scheduler:v0.1.0   # 按实际镜像仓库修改
         args:
         - --config=/etc/kore/config.yaml
         - --authentication-skip-lookup=true

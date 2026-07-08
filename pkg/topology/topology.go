@@ -52,7 +52,9 @@ func Discover(sysfsRoot string) (*Topology, error) {
 		return nil, err
 	}
 	if len(nodeDirs) == 0 {
-		return nil, fmt.Errorf("no NUMA nodes under %s", sysfsRoot)
+		// 无 NUMA sysfs 的内核（CONFIG_NUMA 关闭，VM/kind 常见）：
+		// 按 numactl 语义降级为单 zone 0 含全部在线 CPU。
+		return discoverNonNUMA(sysfsRoot)
 	}
 	sort.Slice(nodeDirs, func(i, j int) bool { return dirNodeID(nodeDirs[i]) < dirNodeID(nodeDirs[j]) })
 
@@ -85,6 +87,28 @@ func Discover(sysfsRoot string) (*Topology, error) {
 			}
 		}
 	}
+	return topo, nil
+}
+
+func discoverNonNUMA(sysfsRoot string) (*Topology, error) {
+	cpus, err := readCPUList(filepath.Join(sysfsRoot, "devices/system/cpu/online"))
+	if err != nil {
+		return nil, fmt.Errorf("no NUMA nodes and no cpu/online under %s: %w", sysfsRoot, err)
+	}
+	topo := &Topology{Siblings: map[int]cpuset.CPUSet{}, ThreadsPerCore: 1}
+	for _, cpu := range cpus.List() {
+		p := filepath.Join(sysfsRoot, fmt.Sprintf("devices/system/cpu/cpu%d/topology/thread_siblings_list", cpu))
+		sib, err := readCPUList(p)
+		if err != nil {
+			sib = cpuset.New(cpu) // 无 topology 信息 → 视为独立物理核
+		}
+		topo.Siblings[cpu] = sib
+		if sib.Size() > topo.ThreadsPerCore {
+			topo.ThreadsPerCore = sib.Size()
+		}
+	}
+	// MemoryTotalBytes 无 per-node 来源，置 0（v1 调度不依赖内存量）
+	topo.Zones = []Zone{{ID: 0, CPUs: cpus, Distances: []int{10}}}
 	return topo, nil
 }
 
