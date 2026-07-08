@@ -135,9 +135,9 @@ spec:
 
 | 注解 | 取值 | 语义 |
 |---|---|---|
-| `pin` | `"true"` | 启用绑核；要求业务容器 CPU 整数且 requests==limits（webhook 校验） |
+| `pin` | `"true"` | 启用绑核；要求至少一个业务容器 CPU 整数且 requests==limits（webhook 校验）。整数核容器被绑定，非整数容器落共享池 |
 | `numa-policy` | `single` | 所有核同一 NUMA，调度硬过滤，节点上不够则拒绝（绝不降级） |
-| | `preferred` | 尽量单 NUMA，不够允许溢出到相邻 NUMA |
+| | `preferred` | 尽量单 NUMA，不够允许溢出（按 NUMA 距离升序） |
 | | `spread` | 核均分到多个 NUMA（带宽敏感型负载） |
 | `memory-policy` | `strict` | `cpuset.mems` 仅含分配到的 NUMA（等价 `numactl --membind`） |
 | | `preferred` | `cpuset.mems` 全开，靠 first-touch 本地化 |
@@ -150,8 +150,9 @@ spec:
 - `kore.zjusct.io/reserved-numa`：调度器 PreBind 写入
 - `kore.zjusct.io/allocated-cpuset`：agent 分配后写入（可观测性）
 
-**多容器规则（v1）**：注解作用于所有整数 CPU 请求的业务容器，各容器独立分配、
-优先同 NUMA；非整数 CPU 的 sidecar 落共享池；init 容器不绑。
+**多容器规则（v1）**：业务容器 = 非 init 容器。注解作用于所有整数 CPU 请求的
+业务容器，各容器独立分配、优先同 NUMA；非整数 CPU 的 sidecar 落共享池；
+init 容器不绑。
 
 **集群级配置**（ConfigMap，agent 启动加载）：默认 placement 策略、SMT 默认行为、
 系统预留核（如 `0-1`）、共享池最小保留、对账 remediation 模式（见 §6）。
@@ -169,9 +170,9 @@ status:
   reservedSystemCpus: "0-1"
   zones:
   - id: 0
-    cpus: "0-31"              # 本 NUMA 全部逻辑核
-    allocatable: 30           # 除去系统预留可独占的核数
-    freeCpus: "4-7,16-31"
+    cpus: "0-15,32-47"        # 本 NUMA 全部逻辑核（示例：HT 机器，32-47 为 sibling）
+    allocatable: 28           # 除去系统预留可独占的核数
+    freeCpus: "4-15,36-47"
     memoryTotal: "256Gi"
     smtSiblings: [[2,34],[3,35]]   # SMT sibling 对（无 SMT 则空）
     devices: []               # v2 预留：NPU/网卡 NUMA 归属
