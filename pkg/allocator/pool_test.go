@@ -3,6 +3,7 @@ package allocator
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"k8s.io/utils/cpuset"
 
@@ -128,6 +129,49 @@ func TestSharedPoolMin(t *testing.T) {
 	s2 := NewState(armTopo(), cpuset.New(), 12)
 	joinPool(t, s2, "demo", 4, "u1", nil)
 	joinPool(t, s2, "demo", 4, "u2", nil) // 触底状态下加入仍成功
+}
+
+func TestPoolResize(t *testing.T) {
+	base := time.Date(2026, 7, 9, 10, 0, 0, 0, time.UTC)
+	s := NewState(armTopo(), cpuset.New(), 0)
+	joinPool(t, s, "demo", 4, "u1", func(r *PoolRequest) { r.PodCreated = base })
+	// 晚于池创建的成员带更大 size → 扩容（zone0 满 → 溢出邻近 zone）
+	p := joinPool(t, s, "demo", 6, "u2", func(r *PoolRequest) { r.PodCreated = base.Add(time.Minute) })
+	if p.CPUs.Size() != 6 || !p.CPUs.Contains(0) || !p.CPUs.Contains(4) {
+		t.Fatalf("grow: %v", p.CPUs)
+	}
+	if len(p.NUMA) != 2 {
+		t.Fatalf("numa must update: %v", p.NUMA)
+	}
+	// 晚创建成员带小 size → 缩容（高位收回）
+	p = joinPool(t, s, "demo", 3, "u3", func(r *PoolRequest) { r.PodCreated = base.Add(2 * time.Minute) })
+	if p.CPUs.String() != "0-2" {
+		t.Fatalf("shrink: %v", p.CPUs)
+	}
+	if s.SharedPool().Size() != 13 {
+		t.Fatalf("shrunk cores must return to shared: %v", s.SharedPool())
+	}
+	// 早于池创建的 joiner 带异 size → 拒绝（陈旧注解防回灌）
+	_, err := s.JoinPool(PoolRequest{Name: "demo", Size: 8, PodUID: "u4",
+		NUMAPolicy: request.NUMASingle, PodCreated: base.Add(-time.Hour)})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale joiner: %v", err)
+	}
+}
+
+func TestPoolResizeSharedPoolMin(t *testing.T) {
+	base := time.Date(2026, 7, 9, 10, 0, 0, 0, time.UTC)
+	s := NewState(armTopo(), cpuset.New(), 10) // 16 核保底 10
+	joinPool(t, s, "demo", 4, "u1", func(r *PoolRequest) { r.PodCreated = base })
+	_, err := s.JoinPool(PoolRequest{Name: "demo", Size: 8, PodUID: "u2",
+		NUMAPolicy: request.NUMASingle, PodCreated: base.Add(time.Minute)})
+	if !errors.Is(err, ErrInsufficient) {
+		t.Fatalf("grow past sharedPoolMin: %v", err)
+	}
+	if p, _ := s.JoinPool(PoolRequest{Name: "demo", Size: 4, PodUID: "u3",
+		NUMAPolicy: request.NUMASingle, PodCreated: base.Add(time.Minute)}); p.CPUs.Size() != 4 {
+		t.Fatalf("pool must be unchanged after failed grow: %v", p.CPUs)
+	}
 }
 
 func TestBuildStatusPools(t *testing.T) {
