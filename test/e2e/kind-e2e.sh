@@ -24,12 +24,17 @@ kubectl apply -f deploy/crd -f deploy/namespace.yaml
 kubectl apply -f deploy/agent/rbac.yaml -f deploy/agent/configmap.yaml \
   -f deploy/scheduler/rbac.yaml -f deploy/scheduler/configmap.yaml \
   -f deploy/operator/rbac.yaml
-# kind 里镜像用本地 tag、关闭拉取
-for f in deploy/agent/daemonset.yaml deploy/scheduler/deployment.yaml deploy/operator/deployment.yaml; do
-  sed -e "s|ghcr.io/zjusct/kore-\(agent\|scheduler\|operator\):latest|kore-\1:$IMG_TAG|" \
-      -e '/image:/a\        imagePullPolicy: Never' "$f" | kubectl apply -f -
-done
-kubectl apply -f deploy/operator/webhook.yaml
+kubectl apply -f deploy/agent/daemonset.yaml -f deploy/scheduler/deployment.yaml \
+  -f deploy/operator/deployment.yaml -f deploy/operator/webhook.yaml
+
+# kind 用本地镜像（strategic patch，避免 BSD/GNU sed 差异）
+patch_image() { # $1=workload $2=container $3=image
+  kubectl -n kore-system patch "$1" --type=strategic \
+    -p "{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"$2\",\"image\":\"$3\",\"imagePullPolicy\":\"Never\"}]}}}}"
+}
+patch_image ds/kore-agent agent "kore-agent:$IMG_TAG"
+patch_image deploy/kore-scheduler scheduler "kore-scheduler:$IMG_TAG"
+patch_image deploy/kore-operator operator "kore-operator:$IMG_TAG"
 bash deploy/operator/gen-certs.sh
 
 step "4/8 等待组件就绪"
@@ -58,8 +63,8 @@ PHASE=$(kubectl get pod kore-e2e-pinned2 -o jsonpath='{.status.phase}')
 [ "$PHASE" = "Pending" ] || { echo "FAIL: pod phase=$PHASE, want Pending with agent down"; exit 1; }
 
 step "8/8 恢复 agent 后 Pod 应能跑起来"
-sed -e "s|ghcr.io/zjusct/kore-agent:latest|kore-agent:$IMG_TAG|" \
-    -e '/image:/a\        imagePullPolicy: Never' deploy/agent/daemonset.yaml | kubectl apply -f -
+kubectl apply -f deploy/agent/daemonset.yaml
+patch_image ds/kore-agent agent "kore-agent:$IMG_TAG"
 kubectl -n kore-system rollout status ds/kore-agent --timeout=120s
 kubectl wait --for=condition=Ready pod/kore-e2e-pinned2 --timeout=180s
 
