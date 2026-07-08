@@ -35,6 +35,19 @@ func TestLoadFile(t *testing.T) {
 	}
 }
 
+func TestSharedPoolMin(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "cfg.yaml")
+	os.WriteFile(p, []byte("sharedPoolMin: 8\n"), 0o644)
+	c, err := Load(p)
+	if err != nil || c.SharedPoolMin != 8 {
+		t.Fatalf("%+v %v", c, err)
+	}
+	os.WriteFile(p, []byte("sharedPoolMin: -1\n"), 0o644)
+	if _, err := Load(p); err == nil {
+		t.Fatal("negative sharedPoolMin must be rejected")
+	}
+}
+
 func TestLoadInvalidEnum(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "cfg.yaml")
 	os.WriteFile(p, []byte("defaultPlacement: diagonal\n"), 0o644)

@@ -3,6 +3,7 @@ package nriplugin
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 
 	"github.com/containerd/nri/pkg/api"
@@ -67,7 +68,7 @@ func (p *Plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if pod.Annotations[request.AnnoPin] != "true" {
+	if pod.Annotations[request.AnnoPin] != "true" && pod.Annotations[request.AnnoPool] == "" {
 		return p.fenceLocked(ctr), nil, nil
 	}
 	kpod, err := p.pods.GetPod(pod.Namespace, pod.Name)
@@ -81,6 +82,9 @@ func (p *Plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 	}
 	if req == nil { // sandbox 注解说 pin 但 Pod 对象已不是 → 以 Pod 为准
 		return p.fenceLocked(ctr), nil, nil
+	}
+	if req.Pool != "" {
+		return p.joinPoolLocked(kpod, req)
 	}
 	ar, pinned := BuildAllocRequest(kpod, req, p.cfg, ctr.Name)
 	if !pinned {
@@ -97,6 +101,34 @@ func (p *Plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 	adj.AddAnnotation(request.AnnoAllocated, a.CPUs.String()) // Synchronize 重建的依据
 
 	p.rec.SetPodAnnotation(kpod, request.AnnoAllocated, a.CPUs.String())
+	p.rep.Report(allocator.BuildStatus(p.state))
+	return adj, p.shrinkSharedLocked(), nil
+}
+
+// joinPoolLocked 让 Pod 的容器加入（必要时创建）CPU 池。调用方须持锁。
+func (p *Plugin) joinPoolLocked(kpod *corev1.Pod, req *request.Request) (*api.ContainerAdjustment, []*api.ContainerUpdate, error) {
+	pr := allocator.PoolRequest{
+		Name: req.Pool, Size: req.PoolSize, PodUID: string(kpod.UID),
+		NUMAPolicy: req.NUMAPolicy, Placement: req.Placement,
+	}
+	if pr.Placement == "" {
+		pr.Placement = request.Placement(p.cfg.DefaultPlacement)
+	}
+	if v, ok := kpod.Annotations[request.AnnoReservedNUMA]; ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			pr.ReservedNUMA = &n
+		}
+	}
+	info, err := p.state.JoinPool(pr)
+	if err != nil {
+		p.rec.Event(kpod, corev1.EventTypeWarning, "KorePoolFailed", err.Error())
+		return nil, nil, fmt.Errorf("kore: %w", err)
+	}
+	adj := &api.ContainerAdjustment{}
+	adj.SetLinuxCPUSetCPUs(info.CPUs.String())
+	adj.SetLinuxCPUSetMems(MemsFor(req.MemoryPolicy, info.NUMA, p.topo))
+	adj.AddAnnotation(request.AnnoAllocated, info.CPUs.String())
+	p.rec.SetPodAnnotation(kpod, request.AnnoAllocated, info.CPUs.String())
 	p.rep.Report(allocator.BuildStatus(p.state))
 	return adj, p.shrinkSharedLocked(), nil
 }

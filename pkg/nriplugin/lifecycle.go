@@ -61,11 +61,21 @@ func (p *Plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, contai
 			continue
 		}
 		pod := sandboxes[c.PodSandboxId]
-		if pod == nil || pod.Annotations[request.AnnoPin] != "true" {
+		if pod == nil || (pod.Annotations[request.AnnoPin] != "true" && pod.Annotations[request.AnnoPool] == "") {
 			p.shared[c.Id] = true
 			continue
 		}
 		if cs := c.Annotations[request.AnnoAllocated]; cs != "" {
+			if poolName := pod.Annotations[request.AnnoPool]; poolName != "" {
+				cpus, perr := cpuset.Parse(cs)
+				if perr != nil {
+					return nil, fmt.Errorf("kore: pool container %s bad %s annotation %q: %w", c.Id, request.AnnoAllocated, cs, perr)
+				}
+				if err := p.state.RestorePoolMember(poolName, cpus, pod.Uid); err != nil {
+					return nil, err
+				}
+				continue
+			}
 			if err := p.restore(pod, c, cs); err != nil {
 				return nil, err
 			}
@@ -108,6 +118,27 @@ func (p *Plugin) remediateLocked(pod *api.PodSandbox, c *api.Container) *api.Con
 	}
 	req, err := request.ParsePod(kpod)
 	if err != nil || req == nil {
+		return nil
+	}
+	if req.Pool != "" { // 该入池未入池
+		if p.cfg.Remediation == "repair" {
+			adj, _, jerr := p.joinPoolLocked(kpod, req)
+			if jerr != nil {
+				p.rec.Event(kpod, corev1.EventTypeWarning, "KoreUnboundContainer",
+					fmt.Sprintf("pool member %s is not in pool %q; repair failed: %v", c.Name, req.Pool, jerr))
+				return nil
+			}
+			p.rec.Event(kpod, corev1.EventTypeWarning, "KoreRepairedBinding",
+				fmt.Sprintf("pool member %s re-joined pool %q", c.Name, req.Pool))
+			u := &api.ContainerUpdate{}
+			u.SetContainerId(c.Id)
+			u.SetLinuxCPUSetCPUs(adj.GetLinux().GetResources().GetCpu().GetCpus())
+			u.SetLinuxCPUSetMems(adj.GetLinux().GetResources().GetCpu().GetMems())
+			return u
+		}
+		p.rec.Event(kpod, corev1.EventTypeWarning, "KoreUnboundContainer",
+			fmt.Sprintf("pool member %s was running outside pool %q (agent was down at creation); deleting pod", c.Name, req.Pool))
+		p.rec.DeletePod(pod.Namespace, pod.Name)
 		return nil
 	}
 	ar, pinned := BuildAllocRequest(kpod, req, p.cfg, c.Name)
