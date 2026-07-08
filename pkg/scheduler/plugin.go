@@ -34,6 +34,9 @@ type Deps struct {
 type poolSnap struct {
 	size    int
 	members []string
+	// pending：来自在途建池预占（Reserve 已占、CR 未体现）。跟随可以，
+	// 但 size 增量不行（容量未落定）。
+	pending bool
 }
 
 type nodeSnap struct {
@@ -112,7 +115,15 @@ func (k *Kore) PreFilter(ctx context.Context, state fwk.CycleState, pod *corev1.
 		if zerr != nil {
 			continue // 坏 CR 视同节点无拓扑
 		}
-		zones = Deduct(zones, k.cache.ByNode(cr.Name))
+		rs := k.cache.ByNode(cr.Name)
+		zones = Deduct(zones, rs)
+		for _, r := range rs { // 在途建池预占 → 视作 pending 池可跟随
+			if r.Pool != "" {
+				if _, exists := pools[r.Pool]; !exists {
+					pools[r.Pool] = poolSnap{size: r.Count, pending: true}
+				}
+			}
+		}
 		st.byNode[cr.Name] = nodeSnap{zones: zones, pools: pools, leaseOK: k.deps.LeaseFresh(cr.Name), found: true}
 	}
 	state.Write(stateKey, st)

@@ -74,6 +74,44 @@ func TestPoolSizeMismatchRejected(t *testing.T) {
 	}
 }
 
+func TestFollowPendingPoolReservation(t *testing.T) {
+	e := newEnv(t, topoCR("n1", "0-7"), topoCR("n2", "0-7"))
+	creator := poolSchedPod("demo", "6")
+	st1 := runPreFilter(t, e.k, creator)
+	if s := e.k.Reserve(context.Background(), st1, creator, "n1"); !s.IsSuccess() {
+		t.Fatal(s)
+	}
+	// 同一突发里的第二个成员：CR 还没有池，但 n1 有在途建池预占
+	member := poolSchedPod("demo", "6")
+	member.UID = "uid-m2"
+	st2 := runPreFilter(t, e.k, member)
+	if s := e.k.Filter(context.Background(), st2, member, nodeInfo("n1")); !s.IsSuccess() {
+		t.Fatalf("must follow pending pool despite deducted capacity: %v", s)
+	}
+	sN1, _ := e.k.Score(context.Background(), st2, member, nodeInfo("n1"))
+	sN2, _ := e.k.Score(context.Background(), st2, member, nodeInfo("n2"))
+	if sN1 != 100 || sN1 <= sN2 {
+		t.Fatalf("pending follow must win: n1=%d n2=%d", sN1, sN2)
+	}
+	if s := e.k.Reserve(context.Background(), st2, member, "n1"); !s.IsSuccess() {
+		t.Fatal(s)
+	}
+	// follower 未新增预占：小独占 Pod 仍能用剩余 2 核
+	small := schedPod("2", nil)
+	small.UID = "uid-s"
+	st3 := runPreFilter(t, e.k, small)
+	if s := e.k.Filter(context.Background(), st3, small, nodeInfo("n1")); !s.IsSuccess() {
+		t.Fatalf("follower must not double-reserve: %v", s)
+	}
+	// pending 池不支持 size 增量（容量未落定）
+	bigger := poolSchedPod("demo", "8")
+	bigger.UID = "uid-b"
+	st4 := runPreFilter(t, e.k, bigger)
+	if s := e.k.Filter(context.Background(), st4, bigger, nodeInfo("n1")); s.IsSuccess() {
+		t.Fatal("pending pool with different size must be rejected")
+	}
+}
+
 func TestPoolReserveOnlyWhenCreating(t *testing.T) {
 	e := newEnv(t, topoCR("n1", "0-7")) // 8 free
 	creator := poolSchedPod("demo", "6")
