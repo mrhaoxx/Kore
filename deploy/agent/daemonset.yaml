@@ -18,6 +18,8 @@ spec:
       tolerations:
       - key: kore.zjusct.io/agent-down   # 必须容忍自己的失活污点，否则起不来
         operator: Exists
+      - key: node.zjusct.io/remote       # 920B 远程节点
+        operator: Exists
       containers:
       - name: agent
         image: docker.io/mrhaoxx/kore-agent:v0.1.0   # 按实际镜像仓库修改
