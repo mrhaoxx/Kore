@@ -243,10 +243,110 @@ func (s *State) pickSingle(n, unit int, strat Strategy, reservedNUMA *int) (cpus
 	return cpuset.New(), nil, fmt.Errorf("%w: no single NUMA zone with %d free cpus", ErrInsufficient, n)
 }
 
+// pickPreferred：先尝试单 zone；不够则以 primary（reservedNUMA 或空闲最多的 zone）
+// 为起点，按 NUMA 距离升序溢出（spec §4 preferred 语义）。
 func (s *State) pickPreferred(n, unit int, strat Strategy, reservedNUMA *int) (cpuset.CPUSet, []int, error) {
-	return cpuset.New(), nil, fmt.Errorf("%w: preferred not implemented yet", ErrInsufficient)
+	if got, numa, err := s.pickSingle(n, unit, strat, nil); err == nil {
+		return got, numa, nil
+	}
+	primary := 0
+	if reservedNUMA != nil {
+		primary = *reservedNUMA
+	} else {
+		bestFree := -1
+		for _, z := range s.topo.Zones {
+			free := len(s.unitsOf(s.freeUnits(z.ID, unit), unit))
+			if free > bestFree {
+				bestFree, primary = free, z.ID
+			}
+		}
+	}
+	var primaryZone *topology.Zone
+	for i := range s.topo.Zones {
+		if s.topo.Zones[i].ID == primary {
+			primaryZone = &s.topo.Zones[i]
+		}
+	}
+	if primaryZone == nil {
+		return cpuset.New(), nil, fmt.Errorf("%w: unknown NUMA zone %d", ErrInsufficient, primary)
+	}
+	order := make([]int, 0, len(s.topo.Zones))
+	for _, z := range s.topo.Zones {
+		order = append(order, z.ID)
+	}
+	sort.Slice(order, func(i, j int) bool {
+		di, dj := primaryZone.Distances[order[i]], primaryZone.Distances[order[j]]
+		if di != dj {
+			return di < dj
+		}
+		return order[i] < order[j]
+	})
+
+	remaining := n
+	result := cpuset.New()
+	var numa []int
+	for _, z := range order {
+		avail := s.unitsOf(s.freeUnits(z, unit), unit)
+		take := min(remaining, len(avail)*unit)
+		take -= take % unit
+		if take == 0 {
+			continue
+		}
+		got, ok := s.pickInZone(z, take, unit, strat)
+		if !ok {
+			continue
+		}
+		result = result.Union(got)
+		numa = append(numa, z)
+		remaining -= take
+		if remaining == 0 {
+			sort.Ints(numa)
+			return result, numa, nil
+		}
+	}
+	return cpuset.New(), nil, fmt.Errorf("%w: %d cpus not available across all zones", ErrInsufficient, n)
 }
 
+// pickSpread：把 needUnits 均分到空闲最多的 zcount 个 zone（余数分给前几个）。
+// 任一 zone 配额无法满足即失败（spread 要求均匀，不做倾斜兜底）。
 func (s *State) pickSpread(n, unit int, strat Strategy) (cpuset.CPUSet, []int, error) {
-	return cpuset.New(), nil, fmt.Errorf("%w: spread not implemented yet", ErrInsufficient)
+	needUnits := n / unit
+	if n%unit != 0 {
+		return cpuset.New(), nil, fmt.Errorf("%w: %d cpus not a multiple of unit %d", ErrSMTAlignment, n, unit)
+	}
+	type zf struct{ id, free int }
+	var zones []zf
+	for _, z := range s.topo.Zones {
+		if free := len(s.unitsOf(s.freeUnits(z.ID, unit), unit)); free > 0 {
+			zones = append(zones, zf{z.ID, free})
+		}
+	}
+	sort.Slice(zones, func(i, j int) bool {
+		if zones[i].free != zones[j].free {
+			return zones[i].free > zones[j].free
+		}
+		return zones[i].id < zones[j].id
+	})
+	zcount := min(len(zones), needUnits)
+	if zcount == 0 {
+		return cpuset.New(), nil, fmt.Errorf("%w: no free zones", ErrInsufficient)
+	}
+	base, extra := needUnits/zcount, needUnits%zcount
+
+	result := cpuset.New()
+	var numa []int
+	for i := 0; i < zcount; i++ {
+		quota := base
+		if i < extra {
+			quota++
+		}
+		got, ok := s.pickInZone(zones[i].id, quota*unit, unit, strat)
+		if !ok {
+			return cpuset.New(), nil, fmt.Errorf("%w: zone %d cannot satisfy spread quota %d", ErrInsufficient, zones[i].id, quota*unit)
+		}
+		result = result.Union(got)
+		numa = append(numa, zones[i].id)
+	}
+	sort.Ints(numa)
+	return result, numa, nil
 }
