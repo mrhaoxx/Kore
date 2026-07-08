@@ -156,10 +156,13 @@ func (k *Kore) Filter(ctx context.Context, state fwk.CycleState, pod *corev1.Pod
 	}
 	if st.req.Pool != "" {
 		if ps, ok := ns.pools[st.req.Pool]; ok {
-			if ps.size != st.req.PoolSize {
-				return fwk.NewStatus(fwk.Unschedulable, "kore: pool exists on node with different size")
+			if ps.pending && ps.size != st.req.PoolSize {
+				return fwk.NewStatus(fwk.Unschedulable, "kore: pending pool with different size")
 			}
-			return nil // 跟随已有池，零新增容量
+			if delta := st.req.PoolSize - ps.size; delta > 0 && TotalFree(ns.zones) < delta {
+				return fwk.NewStatus(fwk.Unschedulable, "kore: insufficient free cpus to grow pool")
+			}
+			return nil // 跟随（含在线扩缩容：agent 侧按成员时间戳裁决）
 		}
 		// 建池：按 numa-policy 检查容量（池用逻辑核，跳过 SMT 对齐）
 		switch st.req.NUMAPolicy {

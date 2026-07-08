@@ -65,12 +65,19 @@ func TestPoolFollowOrCreate(t *testing.T) {
 	}
 }
 
-func TestPoolSizeMismatchRejected(t *testing.T) {
+func TestPoolSizeMismatchResizeSemantics(t *testing.T) {
+	// CR 池 4 核，节点剩 4 free：扩到 6（差量 2 ≤ free）→ 通过；扩到 12（差量 8 > free）→ 拒；缩到 2 → 通过
 	e := newEnv(t, withPool(topoCR("n1", "4-7"), "demo", "0-3", "uid-old"))
-	pod := poolSchedPod("demo", "8")
-	state := runPreFilter(t, e.k, pod)
-	if st := e.k.Filter(context.Background(), state, pod, nodeInfo("n1")); st.IsSuccess() {
-		t.Fatal("size mismatch must be rejected")
+	for _, tc := range []struct {
+		size string
+		ok   bool
+	}{{"6", true}, {"12", false}, {"2", true}} {
+		pod := poolSchedPod("demo", tc.size)
+		state := runPreFilter(t, e.k, pod)
+		st := e.k.Filter(context.Background(), state, pod, nodeInfo("n1"))
+		if st.IsSuccess() != tc.ok {
+			t.Fatalf("size %s: got %v want ok=%v", tc.size, st, tc.ok)
+		}
 	}
 }
 
