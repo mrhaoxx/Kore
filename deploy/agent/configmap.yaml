@@ -5,8 +5,8 @@ metadata:
   namespace: kore-system
 data:
   config.yaml: |
-    # 系统预留核（不参与独占分配与共享池），按节点情况调整
-    reservedSystemCpus: "0-1"
+    # 系统预留核（不参与独占分配与共享池），按节点情况调整；空 = 不预留
+    reservedSystemCpus: ""
     defaultPlacement: pack        # pack | scatter
     defaultSMTPolicy: full-core   # full-core | logical
     remediation: strict           # strict | repair（spec §6 对账兜底）
