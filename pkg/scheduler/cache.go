@@ -8,14 +8,16 @@ import (
 )
 
 // Reservation 是调度器的在途预占：Reserve 时记录，agent 把分配写进 CR 后清除
-//（MarkAllocated），TTL 兜底防泄漏（Pod 绑定失败但 Unreserve 丢失等）。
+// （MarkAllocated），TTL 兜底防泄漏（Pod 绑定失败但 Unreserve 丢失等）。
 type Reservation struct {
 	PodUID   string
 	Node     string
 	Zone     int // -1 = 无固定 zone（spread）
 	Count    int
 	Explicit *cpuset.CPUSet
-	At       time.Time
+	// Pool 非空表示这是建池预占（跟随已有池的成员不预占）。
+	Pool string
+	At   time.Time
 }
 
 type Cache struct {

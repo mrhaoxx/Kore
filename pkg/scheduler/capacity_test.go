@@ -66,7 +66,7 @@ func TestFitSingleBinpack(t *testing.T) {
 
 func TestFitPreferredFallsBack(t *testing.T) {
 	z, ok := FitPreferred(armZones(), 6) // 单 zone 放不下，总量够
-	if !ok || z != 0 { // free 全 4 并列 → 最多者取小 ID
+	if !ok || z != 0 {                   // free 全 4 并列 → 最多者取小 ID
 		t.Fatalf("z=%d ok=%v", z, ok)
 	}
 	if _, ok := FitPreferred(armZones(), 17); ok {

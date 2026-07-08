@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	fwk "k8s.io/kube-scheduler/framework"
+	"k8s.io/utils/cpuset"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/zjusct/kore/pkg/apis/kore/v1alpha1"
@@ -30,8 +31,14 @@ type Deps struct {
 	PatchPodAnnotation func(ctx context.Context, ns, name, key, value string) error
 }
 
+type poolSnap struct {
+	size    int
+	members []string
+}
+
 type nodeSnap struct {
 	zones   []ZoneCap
+	pools   map[string]poolSnap
 	leaseOK bool
 	found   bool
 }
@@ -73,6 +80,9 @@ func (k *Kore) PreFilter(ctx context.Context, state fwk.CycleState, pod *corev1.
 	for _, c := range req.Containers {
 		need += c.CPUs
 	}
+	if req.Pool != "" {
+		need = req.PoolSize
+	}
 	crs, err := k.deps.ListTopologies(ctx)
 	if err != nil {
 		return nil, fwk.AsStatus(err)
@@ -80,10 +90,21 @@ func (k *Kore) PreFilter(ctx context.Context, state fwk.CycleState, pod *corev1.
 	st := &koreState{req: req, need: need, byNode: map[string]nodeSnap{}}
 	for i := range crs {
 		cr := &crs[i]
-		// CR 已体现的分配 → 清对应预占，避免双重扣减
+		// CR 已体现的分配/池成员 → 清对应预占，避免双重扣减
 		uids := map[string]bool{}
 		for _, a := range cr.Status.Allocations {
 			uids[a.PodUID] = true
+		}
+		pools := map[string]poolSnap{}
+		for _, pl := range cr.Status.Pools {
+			cs, perr := cpuset.Parse(pl.Cpuset)
+			if perr != nil {
+				continue
+			}
+			pools[pl.Name] = poolSnap{size: cs.Size(), members: pl.Members}
+			for _, m := range pl.Members {
+				uids[m] = true
+			}
 		}
 		k.cache.MarkAllocated(cr.Name, uids)
 
@@ -92,7 +113,7 @@ func (k *Kore) PreFilter(ctx context.Context, state fwk.CycleState, pod *corev1.
 			continue // 坏 CR 视同节点无拓扑
 		}
 		zones = Deduct(zones, k.cache.ByNode(cr.Name))
-		st.byNode[cr.Name] = nodeSnap{zones: zones, leaseOK: k.deps.LeaseFresh(cr.Name), found: true}
+		st.byNode[cr.Name] = nodeSnap{zones: zones, pools: pools, leaseOK: k.deps.LeaseFresh(cr.Name), found: true}
 	}
 	state.Write(stateKey, st)
 	return nil, nil
@@ -121,6 +142,30 @@ func (k *Kore) Filter(ctx context.Context, state fwk.CycleState, pod *corev1.Pod
 	}
 	if !ns.leaseOK {
 		return fwk.NewStatus(fwk.Unschedulable, "kore: agent lease expired on node")
+	}
+	if st.req.Pool != "" {
+		if ps, ok := ns.pools[st.req.Pool]; ok {
+			if ps.size != st.req.PoolSize {
+				return fwk.NewStatus(fwk.Unschedulable, "kore: pool exists on node with different size")
+			}
+			return nil // 跟随已有池，零新增容量
+		}
+		// 建池：按 numa-policy 检查容量（池用逻辑核，跳过 SMT 对齐）
+		switch st.req.NUMAPolicy {
+		case request.NUMASpread:
+			if !FitSpread(ns.zones, st.need) {
+				return fwk.NewStatus(fwk.Unschedulable, "kore: insufficient free cpus for pool")
+			}
+		case request.NUMAPreferred:
+			if _, ok := FitPreferred(ns.zones, st.need); !ok {
+				return fwk.NewStatus(fwk.Unschedulable, "kore: insufficient free cpus for pool")
+			}
+		default:
+			if _, ok := FitSingle(ns.zones, st.need); !ok {
+				return fwk.NewStatus(fwk.Unschedulable, "kore: no NUMA zone can host the pool")
+			}
+		}
+		return nil
 	}
 	if st.req.Explicit != nil {
 		if !FitExplicit(ns.zones, *st.req.Explicit) {
@@ -158,6 +203,11 @@ func (k *Kore) Score(ctx context.Context, state fwk.CycleState, pod *corev1.Pod,
 	if !ns.found {
 		return 0, nil
 	}
+	if st.req.Pool != "" {
+		if _, ok := ns.pools[st.req.Pool]; ok {
+			return 100, nil // 已有池的节点最优（成员聚合）
+		}
+	}
 	return ScoreFit(ns.zones, st.req.NUMAPolicy, st.req.Explicit != nil, st.need), nil
 }
 
@@ -169,6 +219,27 @@ func (k *Kore) Reserve(ctx context.Context, state fwk.CycleState, pod *corev1.Po
 		return nil
 	}
 	ns := st.byNode[nodeName]
+	if st.req.Pool != "" {
+		if _, ok := ns.pools[st.req.Pool]; ok {
+			return nil // 跟随者不预占
+		}
+		r := Reservation{PodUID: string(pod.UID), Node: nodeName, Zone: -1, Count: st.need, Pool: st.req.Pool}
+		switch st.req.NUMAPolicy {
+		case request.NUMASpread:
+		case request.NUMAPreferred:
+			if z, ok := FitPreferred(ns.zones, st.need); ok {
+				r.Zone = z
+			}
+		default:
+			z, fits := FitSingle(ns.zones, st.need)
+			if !fits {
+				return fwk.NewStatus(fwk.Unschedulable, "kore: capacity changed during scheduling cycle")
+			}
+			r.Zone = z
+		}
+		k.cache.Add(r)
+		return nil
+	}
 	r := Reservation{PodUID: string(pod.UID), Node: nodeName, Zone: -1, Count: st.need, Explicit: st.req.Explicit}
 	if st.req.Explicit == nil {
 		switch st.req.NUMAPolicy {
