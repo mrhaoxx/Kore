@@ -86,6 +86,22 @@ kubectl exec <pod> -- cat /sys/fs/cgroup/cpuset.cpus.effective
 taskset -pc <pid>; numastat -p <pid>
 ```
 
+## CLI
+
+```bash
+make kubectl-kore && sudo cp bin/kubectl-kore /usr/local/bin/
+kubectl kore nodes                    # 全集群账本总览
+kubectl kore pools                    # 所有 CPU 池
+kubectl kore pod <ns> <name>          # 单 Pod 绑定详情（注解 + 账本交叉核对）
+```
+
+### 池内超售（推荐用法）
+
+池边界（cpuset）与原生 CFS 正交叠加：让 **Σlimits > pool-size ≥ Σrequests** 即可
+"合理超售"——空闲时成员可冲到各自 limits，争抢时按 requests 权重回落；因池对外
+独占，权重竞争天然只发生在池成员之间。改 `pool-size` 后 bounce 任一成员即在线
+扩缩容（其余成员零重启）。
+
 ## E2E
 
 `make e2e-kind`（需要本机 docker）：kind 集群开 NRI → 部署三组件 → 绑核 Pod 断言
