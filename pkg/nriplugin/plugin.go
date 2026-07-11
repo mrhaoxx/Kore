@@ -33,17 +33,20 @@ type Reporter interface {
 }
 
 type Plugin struct {
-	mu    sync.Mutex
-	topo  *topology.Topology
-	cfg   *config.Config
-	state *allocator.State
-	pods  PodGetter
-	rec   Recorder
-	rep   Reporter
+	mu             sync.Mutex
+	sharedUpdateMu sync.Mutex
+	topo           *topology.Topology
+	cfg            *config.Config
+	state          *allocator.State
+	pods           PodGetter
+	rec            Recorder
+	rep            Reporter
 
-	shared   map[string]bool            // 共享池容器 id（围栏对象）
-	poolCtrs map[string]map[string]bool // 池名 → 成员容器 id（resize 广播用）
-	updater  func([]*api.ContainerUpdate) error
+	shared              map[string]bool            // 共享池容器 id（围栏对象）
+	poolCtrs            map[string]map[string]bool // 池名 → 成员容器 id（resize 广播用）
+	updater             func([]*api.ContainerUpdate) error
+	sharedUpdateRunning bool
+	sharedUpdatePending bool
 }
 
 func New(topo *topology.Topology, cfg *config.Config, pods PodGetter, rec Recorder, rep Reporter) (*Plugin, error) {
@@ -60,7 +63,11 @@ func New(topo *topology.Topology, cfg *config.Config, pods PodGetter, rec Record
 }
 
 // SetUpdater 注入 stub.UpdateContainers，用于 hook 之外主动收放共享池。
-func (p *Plugin) SetUpdater(fn func([]*api.ContainerUpdate) error) { p.updater = fn }
+func (p *Plugin) SetUpdater(fn func([]*api.ContainerUpdate) error) {
+	p.mu.Lock()
+	p.updater = fn
+	p.mu.Unlock()
+}
 
 func (p *Plugin) Configure(ctx context.Context, cfg, runtime, version string) (api.EventMask, error) {
 	return api.ParseEventMask("CreateContainer,StopPodSandbox,RemovePodSandbox,RemoveContainer")
@@ -173,13 +180,18 @@ func (p *Plugin) fenceLocked(ctr *api.Container) *api.ContainerAdjustment {
 
 // shrinkSharedLocked 生成把全部共享容器夹到当前共享池的更新。调用方须持锁。
 func (p *Plugin) shrinkSharedLocked() []*api.ContainerUpdate {
+	return p.sharedUpdatesLocked(true)
+}
+
+// sharedUpdatesLocked 为主动 runtime 对齐生成可观测失败的更新。调用方须持锁。
+func (p *Plugin) sharedUpdatesLocked(ignoreFailure bool) []*api.ContainerUpdate {
 	pool := p.state.SharedPool().String()
 	out := make([]*api.ContainerUpdate, 0, len(p.shared))
 	for id := range p.shared {
 		u := &api.ContainerUpdate{}
 		u.SetContainerId(id)
 		u.SetLinuxCPUSetCPUs(pool)
-		u.IgnoreFailure = true // 容器可能恰好退出，围栏失败不应连坐
+		u.IgnoreFailure = ignoreFailure
 		out = append(out, u)
 	}
 	return out

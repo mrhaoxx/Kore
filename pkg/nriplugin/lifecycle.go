@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/containerd/nri/pkg/api"
 	corev1 "k8s.io/api/core/v1"
@@ -14,6 +15,11 @@ import (
 	"github.com/zjusct/kore/pkg/metrics"
 	"github.com/zjusct/kore/pkg/request"
 	"github.com/zjusct/kore/pkg/topology"
+)
+
+const (
+	sharedUpdateRetryInitial = 100 * time.Millisecond
+	sharedUpdateRetryMax     = 5 * time.Second
 )
 
 func (p *Plugin) StopPodSandbox(ctx context.Context, pod *api.PodSandbox) error {
@@ -42,15 +48,68 @@ func (p *Plugin) releasePod(uid string) {
 	before := p.state.Used().Size()
 	p.state.Release(uid)
 	changed := p.state.Used().Size() != before
-	updates := p.shrinkSharedLocked()
+	status := allocator.BuildStatus(p.state)
+	updater := p.updater
 	p.mu.Unlock()
 	if !changed {
 		return
 	}
-	if p.updater != nil {
-		_ = p.updater(updates) // 尽力而为；失败由下次 Synchronize 对齐
+	p.rep.Report(status)
+	if updater != nil {
+		p.queueSharedUpdate(updater)
 	}
-	p.rep.Report(allocator.BuildStatus(p.state))
+}
+
+// queueSharedUpdate 在 NRI hook 之外串行更新共享池。UpdateContainers 会重入
+// containerd 的 adaptation lock，不得在 hook 内同步等待。执行后再检查当前账本，
+// 若期间发生了分配或新的释放，继续推送最新状态，避免旧扩张覆盖新收缩。
+func (p *Plugin) queueSharedUpdate(updater func([]*api.ContainerUpdate) error) {
+	p.sharedUpdateMu.Lock()
+	if p.sharedUpdateRunning {
+		p.sharedUpdatePending = true
+		p.sharedUpdateMu.Unlock()
+		return
+	}
+	p.sharedUpdateRunning = true
+	p.sharedUpdateMu.Unlock()
+
+	go p.runSharedUpdates(updater)
+}
+
+func (p *Plugin) runSharedUpdates(updater func([]*api.ContainerUpdate) error) {
+	retryDelay := sharedUpdateRetryInitial
+	for {
+		p.mu.Lock()
+		updates := p.sharedUpdatesLocked(false)
+		desired := p.state.SharedPool().String()
+		p.mu.Unlock()
+
+		if err := updater(updates); err != nil {
+			time.Sleep(retryDelay)
+			if retryDelay < sharedUpdateRetryMax {
+				retryDelay *= 2
+				if retryDelay > sharedUpdateRetryMax {
+					retryDelay = sharedUpdateRetryMax
+				}
+			}
+			continue
+		}
+		retryDelay = sharedUpdateRetryInitial
+
+		p.mu.Lock()
+		current := p.state.SharedPool().String()
+		p.mu.Unlock()
+
+		p.sharedUpdateMu.Lock()
+		if p.sharedUpdatePending || current != desired {
+			p.sharedUpdatePending = false
+			p.sharedUpdateMu.Unlock()
+			continue
+		}
+		p.sharedUpdateRunning = false
+		p.sharedUpdateMu.Unlock()
+		return
+	}
 }
 
 // Synchronize 重建账本。铁律：单个容器的数据问题（坏注解、恢复冲突）绝不

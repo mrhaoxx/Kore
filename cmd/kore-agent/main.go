@@ -126,10 +126,7 @@ func run(sysfs, nodeName, cfgPath, namespace, kubeletDir string) error {
 	if err != nil {
 		return err
 	}
-	plugin.SetUpdater(func(us []*api.ContainerUpdate) error {
-		_, err := st.UpdateContainers(us)
-		return err
-	})
+	plugin.SetUpdater(newNRIUpdater(ctx, cancel, st, 5*time.Second))
 
 	reservedSet, _ := cfg.Reserved()
 	dp := deviceplugin.New(topo.AllCPUs().Difference(reservedSet).Size(), kubeletDir)
@@ -157,6 +154,60 @@ func run(sysfs, nodeName, cfgPath, namespace, kubeletDir string) error {
 	// 权威账本；启动期的空状态报告会与之竞态，曾导致 CR 账本被清空。
 	log.Printf("kore-agent up on %s: %d zones, %d cpus", nodeName, len(topo.Zones), topo.AllCPUs().Size())
 	return st.Run(ctx) // 阻塞直到 NRI 连接结束/ctx 取消
+}
+
+type runtimeUpdater interface {
+	UpdateContainers([]*api.ContainerUpdate) ([]*api.ContainerUpdate, error)
+}
+
+type runtimeUpdateResult struct {
+	failed []*api.ContainerUpdate
+	err    error
+}
+
+// newNRIUpdater 给 stub.UpdateContainers 补上失败观测与超时。stub 内部使用
+// context.Background，若 runtime 永久不回应，只能取消 agent 主 context，
+// 让 DaemonSet 重启后通过 Synchronize 恢复权威状态。
+func newNRIUpdater(ctx context.Context, cancel context.CancelFunc, runtime runtimeUpdater, timeout time.Duration) func([]*api.ContainerUpdate) error {
+	return func(updates []*api.ContainerUpdate) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		result := make(chan runtimeUpdateResult, 1)
+		go func() {
+			failed, err := runtime.UpdateContainers(updates)
+			result <- runtimeUpdateResult{failed: failed, err: err}
+		}()
+
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case r := <-result:
+			if r.err != nil {
+				log.Printf("kore: shared container update failed: %v", r.err)
+				return r.err
+			}
+			if len(r.failed) != 0 {
+				ids := make([]string, 0, len(r.failed))
+				for _, update := range r.failed {
+					ids = append(ids, update.GetContainerId())
+				}
+				err := fmt.Errorf("runtime failed to update shared containers %v", ids)
+				log.Printf("kore: %v", err)
+				return err
+			}
+			return nil
+		case <-timer.C:
+			err := fmt.Errorf("shared container update timed out after %s", timeout)
+			log.Printf("kore: %v; restarting agent for NRI resynchronization", err)
+			cancel()
+			return err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 type k8sAdapters struct {
