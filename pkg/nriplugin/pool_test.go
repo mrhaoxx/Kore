@@ -52,8 +52,11 @@ func TestPoolMembersShareCpuset(t *testing.T) {
 func TestPoolReleaseGrowsSharedAfterLastMember(t *testing.T) {
 	p1, p2 := poolPod("m1", "uid-m1"), poolPod("m2", "uid-m2")
 	p, _, _ := newTestPlugin(t, p1, p2)
-	var pushed []*api.ContainerUpdate
-	p.SetUpdater(func(us []*api.ContainerUpdate) error { pushed = us; return nil })
+	pushed := make(chan []*api.ContainerUpdate, 1)
+	p.SetUpdater(func(us []*api.ContainerUpdate) error {
+		pushed <- us
+		return nil
+	})
 
 	sb1 := &api.PodSandbox{Id: "sb-m1", Name: "m1", Uid: "uid-m1", Namespace: "default", Annotations: poolAnnos()}
 	sb2 := &api.PodSandbox{Id: "sb-m2", Name: "m2", Uid: "uid-m2", Namespace: "default", Annotations: poolAnnos()}
@@ -64,14 +67,22 @@ func TestPoolReleaseGrowsSharedAfterLastMember(t *testing.T) {
 	if err := p.StopPodSandbox(context.Background(), sb1); err != nil {
 		t.Fatal(err)
 	}
-	if len(pushed) != 0 { // 池未释放（还有成员）→ Used 未变 → 不推送
-		t.Fatalf("pool must survive first member exit, pushed=%+v", pushed)
+	select { // 池未释放（还有成员）→ Used 未变 → 不推送
+	case updates := <-pushed:
+		t.Fatalf("pool must survive first member exit, pushed=%+v", updates)
+	default:
 	}
 	if err := p.StopPodSandbox(context.Background(), sb2); err != nil {
 		t.Fatal(err)
 	}
-	if len(pushed) != 1 || updCpus(pushed[0]) != "1-7" {
-		t.Fatalf("shared pool must grow after pool freed: %+v", pushed)
+	var updates []*api.ContainerUpdate
+	select {
+	case updates = <-pushed:
+	case <-time.After(time.Second):
+		t.Fatal("shared pool update was not delivered after pool freed")
+	}
+	if len(updates) != 1 || updCpus(updates[0]) != "1-7" {
+		t.Fatalf("shared pool must grow after pool freed: %+v", updates)
 	}
 }
 
