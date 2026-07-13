@@ -10,6 +10,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	toolscache "k8s.io/client-go/tools/cache"
 	fwk "k8s.io/kube-scheduler/framework"
 	"k8s.io/utils/cpuset"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -343,5 +344,13 @@ func New(ctx context.Context, _ runtime.Object, h fwk.Handle) (fwk.Plugin, error
 			return err
 		},
 	}
-	return NewWithDeps(deps, NewCache(defaultReservationTTL)), nil
+	resCache := NewCache(defaultReservationTTL)
+	// Pod 删除即时清预占：堵住“Reserve+Bind 后落账前被删”的泄漏口（否则卡满 5min TTL）。
+	if _, err := h.SharedInformerFactory().Core().V1().Pods().Informer().AddEventHandler(
+		toolscache.ResourceEventHandlerFuncs{
+			DeleteFunc: func(obj interface{}) { removeReservationOnDelete(resCache, obj) },
+		}); err != nil {
+		return nil, err
+	}
+	return NewWithDeps(deps, resCache), nil
 }
