@@ -185,16 +185,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "up", "k":
-			if m.scroll > 0 {
-				m.scroll--
-			}
+			m.scrollBy(-1)
 		case "down", "j":
-			if m.scroll < len(m.content)-m.height+2 {
-				m.scroll++
-			}
+			m.scrollBy(1)
+		}
+	case tea.MouseMsg:
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			m.scrollBy(-3)
+		case tea.MouseButtonWheelDown:
+			m.scrollBy(3)
 		}
 	}
 	return m, nil
+}
+
+// scrollBy 滚动 delta 行并钳制在 [0, 最大偏移]；键盘与滚轮共用。
+func (m *model) scrollBy(delta int) {
+	max := len(m.content) - m.height + 2
+	if max < 0 {
+		max = 0
+	}
+	m.scroll += delta
+	if m.scroll < 0 {
+		m.scroll = 0
+	}
+	if m.scroll > max {
+		m.scroll = max
+	}
 }
 
 func (m *model) rebuild() {
@@ -226,7 +244,7 @@ func (m model) View() string {
 		start = end
 	}
 	return strings.Join(m.content[start:end], "\n") + "\n" +
-		stHelp.Render(fmt.Sprintf("watch 事件驱动（已收 %d 事件）· ↑/↓ 滚动 · q 退出", m.events))
+		stHelp.Render(fmt.Sprintf("watch 事件驱动（已收 %d 事件）· ↑/↓/滚轮 滚动 · q 退出", m.events))
 }
 
 // watchLoop：list 建快照 → watch 增量推送；断流自动重连（重列以对账）。
@@ -285,7 +303,8 @@ func runTop(c ctrlclient.Client, wc ctrlclient.WithWatch, once bool) error {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	p := tea.NewProgram(model{items: map[string]v1alpha1.KoreNodeTopology{}}, tea.WithAltScreen())
+	p := tea.NewProgram(model{items: map[string]v1alpha1.KoreNodeTopology{}},
+		tea.WithAltScreen(), tea.WithMouseCellMotion())
 	go watchLoop(ctx, wc, p)
 	_, err := p.Run()
 	return err
