@@ -153,6 +153,11 @@ func run(sysfs, nodeName, cfgPath, namespace, kubeletDir string) error {
 		_ = (&http.Server{Addr: ":9100", Handler: mux}).ListenAndServe()
 	}()
 
+	// 共享池重围栏：在 NRI 事件流之外的独立 goroutine 做 UpdateContainers，
+	// 避免在 StopPodSandbox 处理器内同步再入 containerd 导致的再入死锁（该死锁
+	// 被 containerd 2s 超时打破 → 踢插件 → agent 崩溃循环 → 幽灵 → 调度死锁）。
+	go plugin.RunRefencer(ctx)
+
 	// 不在此处上报初始状态：NRI 注册时 Synchronize 必然执行并上报恢复后的
 	// 权威账本；启动期的空状态报告会与之竞态，曾导致 CR 账本被清空。
 	log.Printf("kore-agent up on %s: %d zones, %d cpus", nodeName, len(topo.Zones), topo.AllCPUs().Size())
@@ -170,7 +175,10 @@ func (a *k8sAdapters) GetPod(ns, name string) (*corev1.Pod, error) {
 	if p, err := a.lister.Pods(ns).Get(name); err == nil {
 		return p, nil
 	}
-	ctx, cancel := context.WithTimeout(a.ctx, 2*time.Second)
+	// 直连兜底超时必须远低于 containerd 的 NRI plugin_request_timeout（默认 2s）：
+	// GetPod 在 CreateContainer 处理器同步路径上，若阻塞满 2s 会顶穿事件死线 →
+	// containerd 踢插件。缓存已同步时几乎不会走到这里。
+	ctx, cancel := context.WithTimeout(a.ctx, 500*time.Millisecond)
 	defer cancel()
 	return a.cs.CoreV1().Pods(ns).Get(ctx, name, metav1.GetOptions{})
 }

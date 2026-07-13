@@ -70,6 +70,12 @@ func TestPoolReleaseGrowsSharedAfterLastMember(t *testing.T) {
 	if err := p.StopPodSandbox(context.Background(), sb2); err != nil {
 		t.Fatal(err)
 	}
+	if pushed != nil { // 释放处理器内不得同步重围栏（再入死锁）
+		t.Fatalf("StopPodSandbox 处理器内不得同步重围栏；pushed=%+v", pushed)
+	}
+	// 后台重围栏在处理器之外执行：末位成员离开、池释放 → 共享池长回 1-7
+	<-p.refence
+	p.refenceOnce()
 	if len(pushed) != 1 || updCpus(pushed[0]) != "1-7" {
 		t.Fatalf("shared pool must grow after pool freed: %+v", pushed)
 	}

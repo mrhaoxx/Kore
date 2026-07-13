@@ -25,7 +25,17 @@ func TestStopPodReleasesAndGrowsShared(t *testing.T) {
 	if err := p.StopPodSandbox(context.Background(), sb); err != nil {
 		t.Fatal(err)
 	}
-	// 释放后共享池恢复 1-7，c9 被推回
+	// 铁律：释放处理器绝不在 NRI 事件内同步推 UpdateContainers（再入死锁）。
+	if pushed != nil {
+		t.Fatalf("StopPodSandbox 处理器内不得同步重围栏（再入死锁）；pushed = %+v", pushed)
+	}
+	// 但必须已排队一次异步重围栏
+	if len(p.refence) != 1 {
+		t.Fatalf("释放后应排队一次异步重围栏，refence 队列长度 = %d", len(p.refence))
+	}
+	// 后台重围栏在事件处理器之外执行：共享池恢复 1-7，c9 被推回
+	<-p.refence
+	p.refenceOnce()
 	if len(pushed) != 1 || pushed[0].GetContainerId() != "c9" ||
 		updCpus(pushed[0]) != "1-7" {
 		t.Fatalf("pushed = %+v", pushed)

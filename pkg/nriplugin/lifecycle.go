@@ -36,21 +36,57 @@ func (p *Plugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 	return nil
 }
 
-// releasePod 释放某 Pod 的全部独占分配并把共享池扩张推给运行时。
+// releasePod 释放某 Pod 的全部独占分配，并【异步】把共享池扩张推给运行时。
+//
+// 铁律：绝不在 NRI 事件处理器（StopPodSandbox/RemovePodSandbox）内同步调用
+// UpdateContainers。那是一次再入 containerd 的调用，而 containerd 正卡在等这个
+// 事件处理器返回——互等构成再入死锁，只能被 containerd 的 plugin_request_timeout
+// （默认 2s）打破，届时 containerd 判插件失联、踢下线、agent 崩溃重启，进而丢失
+// 后续释放事件、Synchronize 把将死容器复活成幽灵，最终自锁调度。故重围栏一律
+// 交给 RunRefencer 在处理器之外做。
 func (p *Plugin) releasePod(uid string) {
 	p.mu.Lock()
 	before := p.state.Used().Size()
 	p.state.Release(uid)
 	changed := p.state.Used().Size() != before
-	updates := p.shrinkSharedLocked()
 	p.mu.Unlock()
 	if !changed {
 		return
 	}
-	if p.updater != nil {
-		_ = p.updater(updates) // 尽力而为；失败由下次 Synchronize 对齐
-	}
+	p.signalRefence()
 	p.rep.Report(allocator.BuildStatus(p.state))
+}
+
+// signalRefence 请求一次异步共享池重围栏；多次请求合并为一次（读最新状态）。
+func (p *Plugin) signalRefence() {
+	select {
+	case p.refence <- struct{}{}:
+	default: // 已有待处理信号，合并
+	}
+}
+
+// refenceOnce 计算并推送一次共享池围栏更新。必须在 NRI 事件处理器之外调用
+// （见 releasePod 的再入死锁说明）。
+func (p *Plugin) refenceOnce() {
+	p.mu.Lock()
+	updates := p.shrinkSharedLocked()
+	p.mu.Unlock()
+	if p.updater != nil && len(updates) > 0 {
+		_ = p.updater(updates) // 尽力而为；失败由下次事件/Synchronize 对齐
+	}
+}
+
+// RunRefencer 后台重围栏循环：收到信号就把共享容器夹到当前共享池。由 main 在
+// NRI 事件流之外的独立 goroutine 里启动，从根本上避免再入死锁。
+func (p *Plugin) RunRefencer(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-p.refence:
+			p.refenceOnce()
+		}
+	}
 }
 
 // Synchronize 重建账本。铁律：单个容器的数据问题（坏注解、恢复冲突）绝不
