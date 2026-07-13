@@ -25,7 +25,7 @@ spec:
         operator: Exists
       containers:
       - name: agent
-        image: docker.io/mrhaoxx/kore-agent:v0.3.1   # 按实际镜像仓库修改
+        image: docker.io/mrhaoxx/kore-agent:v0.3.2   # 按实际镜像仓库修改（v0.3.2 多架构含 riscv64）
         args:
         - --config=/etc/kore/config.yaml
         ports:
