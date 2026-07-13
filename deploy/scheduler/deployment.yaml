@@ -14,7 +14,7 @@ spec:
       serviceAccountName: kore-scheduler
       containers:
       - name: scheduler
-        image: docker.io/mrhaoxx/kore-scheduler:v0.3.2   # 按实际镜像仓库修改（v0.3.2 含预占泄漏修复）
+        image: docker.io/mrhaoxx/kore-scheduler:v0.3.3   # 按实际镜像仓库修改（v0.3.2 含预占泄漏修复）
         args:
         - --config=/etc/kore/config.yaml
         - --authentication-skip-lookup=true
