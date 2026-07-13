@@ -23,6 +23,8 @@ spec:
         operator: Exists
       - key: node.zjusct.io/remote       # 920B 远程节点
         operator: Exists
+      - key: zjusct.io/riscv-experimental # riscv64 实验节点（多架构镜像统一覆盖）
+        operator: Exists
       containers:
       - name: agent
         image: docker.io/mrhaoxx/kore-agent:v0.3.2   # 按实际镜像仓库修改（v0.3.2 多架构含 riscv64）
