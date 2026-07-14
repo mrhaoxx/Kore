@@ -64,6 +64,11 @@ func main() {
 	if err := r.SetupWithManager(mgr); err != nil {
 		log.Fatal(err)
 	}
+	// 把本控制器认领的 AdmissionCheck 置 Active=True（Kueue 要求）。
+	act := &admissioncheck.ActivateReconciler{Client: c, ControllerName: admissioncheck.ControllerName}
+	if err := act.SetupWithManager(mgr); err != nil {
+		log.Fatal(err)
+	}
 	log.Printf("kore-kueue-admissioncheck up: check=%q ttl=%s", *checkName, *resvTTL)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		log.Fatal(err)

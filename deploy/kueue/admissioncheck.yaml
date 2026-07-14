@@ -3,7 +3,7 @@
 # 分区侧（由 plat101/集群方在 partitions.yaml 做）：给需 pin 的 ClusterQueue 加
 #   spec.admissionChecks: [kore-cores]
 ---
-apiVersion: kueue.x-k8s.io/v1beta1
+apiVersion: kueue.x-k8s.io/v1beta2
 kind: AdmissionCheck
 metadata:
   name: kore-cores
@@ -28,8 +28,14 @@ rules:
   resources: ["workloads/status"]
   verbs: ["get", "update", "patch"]
 - apiGroups: ["kueue.x-k8s.io"]
-  resources: ["resourceflavors", "admissionchecks"]
+  resources: ["resourceflavors"]
   verbs: ["get", "list", "watch"]
+- apiGroups: ["kueue.x-k8s.io"]
+  resources: ["admissionchecks"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+- apiGroups: ["kueue.x-k8s.io"]
+  resources: ["admissionchecks/status"]
+  verbs: ["get", "update", "patch"]
 - apiGroups: [""]
   resources: ["nodes"]
   verbs: ["get", "list", "watch"]
@@ -69,7 +75,7 @@ spec:
       serviceAccountName: kore-kueue-admissioncheck
       containers:
       - name: controller
-        image: docker.io/mrhaoxx/kore-kueue-admissioncheck:v0.3.3   # 按实际镜像仓库修改
+        image: docker.io/mrhaoxx/kore-kueue-admissioncheck:v0.3.4   # 按实际镜像仓库修改
         args:
         - --check-name=kore-cores
         - --reservation-ttl=5m

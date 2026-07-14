@@ -12,10 +12,15 @@ import (
 // json tag 与 runtime.DefaultUnstructuredConverter 互转，无需引官方 kueue 模块
 // 或手写 DeepCopy（本仓库为调度器已有 33 个 staging replace，避免依赖冲突）。
 
+// 用 v1beta2（集群 storage 版本；v1beta1 已弃用为 served-only）。字段名两版一致。
 var (
-	WorkloadGVK       = schema.GroupVersionKind{Group: "kueue.x-k8s.io", Version: "v1beta1", Kind: "Workload"}
-	ResourceFlavorGVK = schema.GroupVersionKind{Group: "kueue.x-k8s.io", Version: "v1beta1", Kind: "ResourceFlavor"}
+	WorkloadGVK       = schema.GroupVersionKind{Group: "kueue.x-k8s.io", Version: "v1beta2", Kind: "Workload"}
+	ResourceFlavorGVK = schema.GroupVersionKind{Group: "kueue.x-k8s.io", Version: "v1beta2", Kind: "ResourceFlavor"}
+	AdmissionCheckGVK = schema.GroupVersionKind{Group: "kueue.x-k8s.io", Version: "v1beta2", Kind: "AdmissionCheck"}
 )
+
+// ControllerName 是本控制器在 AdmissionCheck.spec.controllerName 上认领的名字。
+const ControllerName = "kore.zjusct.io/admissioncheck"
 
 type Workload struct {
 	metav1.ObjectMeta `json:"metadata,omitempty"`

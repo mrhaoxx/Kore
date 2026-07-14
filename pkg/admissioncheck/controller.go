@@ -206,11 +206,14 @@ func (r *Reconciler) setState(ctx context.Context, wlU *unstructured.Unstructure
 	if m["state"] == state && m["message"] == msg {
 		return nil // 无变化，避免抖动
 	}
+	before := wlU.DeepCopy()
 	m["state"] = state
 	m["message"] = msg
 	m["lastTransitionTime"] = metav1.Now().UTC().Format(time.RFC3339)
 	if err := unstructured.SetNestedSlice(wlU.Object, checks, "status", "admissionChecks"); err != nil {
 		return err
 	}
-	return r.Client.Status().Update(ctx, wlU)
+	// merge patch（不带 resourceVersion）写回：Kueue 频繁改 Workload，全量
+	// Status().Update 会 409 冲突、状态永远推不动；merge patch 应用于最新对象。
+	return r.Client.Status().Patch(ctx, wlU, client.MergeFrom(before))
 }
