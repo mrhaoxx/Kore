@@ -72,6 +72,21 @@ func effZones(req *request.Request, zones []ZoneCap) []ZoneCap {
 	return zones
 }
 
+// effNeed 返回 full-core 独占请求的有效逻辑核数：向上取整到整物理核（cpu=1 在 SMT2
+// 上占 1 整核=2 逻辑核），与 agent 分配器同一取整语义。explicit/logical/池 原样。
+func effNeed(req *request.Request, zones []ZoneCap, need int) int {
+	if req.Explicit != nil || req.SMTPolicy == request.SMTLogical {
+		return need
+	}
+	tpc := 1
+	for _, z := range zones {
+		if z.TPC > tpc {
+			tpc = z.TPC
+		}
+	}
+	return request.RoundUpToCore(need, tpc)
+}
+
 // Deduct 扣除未被 CR 体现的预占。count 型从对应 zone 的高位核扣（低位段留给
 // explicit 检查更常用）；Zone<0（spread）按 zone 轮转扣；explicit 型精确扣。
 func Deduct(zones []ZoneCap, rs []Reservation) []ZoneCap {
@@ -166,17 +181,6 @@ func FitExplicit(zones []ZoneCap, want cpuset.CPUSet) bool {
 		all = all.Union(z.Free)
 	}
 	return want.Difference(all).IsEmpty()
-}
-
-// AlignFullCore：full-core 语义下 need 必须能被最大 TPC 整除。
-func AlignFullCore(zones []ZoneCap, need int) bool {
-	tpc := 1
-	for _, z := range zones {
-		if z.TPC > tpc {
-			tpc = z.TPC
-		}
-	}
-	return need%tpc == 0
 }
 
 // ScoreFit：越紧凑越高分（binpack 倾向），0-100。

@@ -88,13 +88,6 @@ func TestFitSpreadAndExplicit(t *testing.T) {
 	}
 }
 
-func TestAlignFullCore(t *testing.T) {
-	smt := []ZoneCap{{ID: 0, Free: cpuset.New(0, 1, 8, 9), TPC: 2}}
-	if AlignFullCore(smt, 3) || !AlignFullCore(smt, 4) || !AlignFullCore(armZones(), 3) {
-		t.Fatal("alignment check wrong")
-	}
-}
-
 func TestScoreFitPrefersTightZone(t *testing.T) {
 	loose := armZones()                                         // 每 zone 4 free
 	tight := []ZoneCap{{ID: 0, Free: cpuset.New(0, 1), TPC: 1}} // 恰好 2

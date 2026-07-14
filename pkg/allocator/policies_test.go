@@ -1,7 +1,6 @@
 package allocator
 
 import (
-	"errors"
 	"testing"
 
 	"k8s.io/utils/cpuset"
@@ -101,12 +100,19 @@ func TestSMTFullCore(t *testing.T) {
 	}
 }
 
-func TestSMTMisalignmentFails(t *testing.T) {
+func TestSMTOddRoundsUpToWholeCore(t *testing.T) {
 	s := NewState(x86Topo(), cpuset.New(), 0)
-	_, err := s.Allocate(Request{PodUID: "u", Pod: "d/p", Container: "app", CPUs: 3,
-		NUMAPolicy: request.NUMASingle, SMTPolicy: request.SMTFullCore})
-	if !errors.Is(err, ErrSMTAlignment) {
-		t.Fatalf("err = %v", err)
+	a := alloc(t, s, "a", 3, nil) // full-core cpu=3 → 向上取整到 2 整核=4 逻辑核
+	if a.CPUs.String() != "0-1,8-9" {
+		t.Fatalf("cpus = %s, want 0-1,8-9 (2 整核)", a.CPUs)
+	}
+}
+
+func TestSMTOneCoreRoundsUp(t *testing.T) {
+	s := NewState(x86Topo(), cpuset.New(), 0)
+	a := alloc(t, s, "a", 1, nil) // full-core cpu=1 → 1 整核 = {0,8}（学生小作业拿到独占整核）
+	if a.CPUs.String() != "0,8" {
+		t.Fatalf("cpus = %s, want 0,8 (1 整核)", a.CPUs)
 	}
 }
 

@@ -110,3 +110,30 @@ func TestCapacitySMTOrphanVsLogical(t *testing.T) {
 		t.Fatalf("full-core 整核 [0,4] 应可放 1 个 2 核，got %d", r)
 	}
 }
+
+// §13 回归：cpu=1 full-core 在 SMT2 分区向上取整到 1 整核，不再被误判 Rejected。
+func TestCpu1RoundsUpOnSMT(t *testing.T) {
+	sibs := [][]int{{0, 4}, {1, 5}, {2, 6}, {3, 7}}
+	free := []NodeTopo{node("m", smtZone(t, 0, "0-1,4-5", sibs))} // 2 整核空闲（[0,4]、[1,5]）
+	// Capacity：cpu=1→取整到1整核=2逻辑核→放2个；cpu=3→2整核=4→放1个
+	if r, _ := Capacity(free, Req{NeedPerRep: 1, Count: 1, NUMAPolicy: request.NUMASingle}); r != 2 {
+		t.Fatalf("cpu=1 应放 2 个整核副本，got %d", r)
+	}
+	if r, _ := Capacity(free, Req{NeedPerRep: 3, Count: 1, NUMAPolicy: request.NUMASingle}); r != 1 {
+		t.Fatalf("cpu=3 应取整到 2 整核、放 1 个，got %d", r)
+	}
+	// Evaluate：cpu=1 pin 应 Ready（而非 Rejected）
+	if d, _, _ := Evaluate(free, free, Req{Pin: true, NeedPerRep: 1, Count: 1, NUMAPolicy: request.NUMASingle}, nil); d != Ready {
+		t.Fatalf("cpu=1 full-core 在有整核的 SMT 分区应 Ready，got %s", d)
+	}
+}
+
+// 无 SMT 拓扑：cpu∈{1,2,3} 按逻辑核算、不取整。
+func TestNoSMTCpu123(t *testing.T) {
+	nodes := []NodeTopo{node("n", zone(t, 0, "0-5"))} // 6 逻辑核，TPC=1
+	for _, c := range []struct{ cpu, want int }{{1, 6}, {2, 3}, {3, 2}} {
+		if r, _ := Capacity(nodes, Req{NeedPerRep: c.cpu, Count: 1, NUMAPolicy: request.NUMASingle}); r != c.want {
+			t.Errorf("无SMT cpu=%d 应放 %d 个，got %d", c.cpu, c.want, r)
+		}
+	}
+}

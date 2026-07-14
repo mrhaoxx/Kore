@@ -212,3 +212,16 @@ func TestParsePod(t *testing.T) {
 		})
 	}
 }
+
+func TestRoundUpToCore(t *testing.T) {
+	cases := []struct{ cpus, tpc, want int }{
+		{1, 2, 2}, {2, 2, 2}, {3, 2, 4}, {4, 2, 4}, // SMT2：奇数向上取整
+		{1, 1, 1}, {3, 1, 3}, // 无 SMT：原样
+		{5, 4, 8}, {8, 4, 8}, // 假想 4 线程/核
+	}
+	for _, c := range cases {
+		if got := RoundUpToCore(c.cpus, c.tpc); got != c.want {
+			t.Errorf("RoundUpToCore(%d,%d)=%d want %d", c.cpus, c.tpc, got, c.want)
+		}
+	}
+}

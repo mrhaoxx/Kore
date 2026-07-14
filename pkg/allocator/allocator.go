@@ -129,12 +129,12 @@ func (s *State) Allocate(req Request) (Allocation, error) {
 	}
 
 	unit := 1
+	cpus := req.CPUs
 	if req.SMTPolicy != request.SMTLogical && s.topo.SMTEnabled() {
 		unit = s.topo.ThreadsPerCore
-		if req.CPUs%unit != 0 {
-			return Allocation{}, fmt.Errorf("%w: %d cpus on SMT node (threads-per-core=%d); use smt-policy=logical or align the count",
-				ErrSMTAlignment, req.CPUs, unit)
-		}
+		// full-core：奇数核向上取整到整物理核（cpu=1 在 SMT2 上占 1 个完整核=2 逻辑核，
+		// 独占隔离）。取整语义与调度器/AdmissionCheck 一致，杜绝奇数 pin 被拒/失败。
+		cpus = request.RoundUpToCore(req.CPUs, unit)
 	}
 	strat := StrategyFor(req.Placement)
 
@@ -143,11 +143,11 @@ func (s *State) Allocate(req Request) (Allocation, error) {
 	var err error
 	switch req.NUMAPolicy {
 	case request.NUMASpread:
-		picked, numa, err = s.pickSpread(req.CPUs, unit, strat)
+		picked, numa, err = s.pickSpread(cpus, unit, strat)
 	case request.NUMAPreferred:
-		picked, numa, err = s.pickPreferred(req.CPUs, unit, strat, req.ReservedNUMA)
+		picked, numa, err = s.pickPreferred(cpus, unit, strat, req.ReservedNUMA)
 	default:
-		picked, numa, err = s.pickSingle(req.CPUs, unit, strat, req.ReservedNUMA)
+		picked, numa, err = s.pickSingle(cpus, unit, strat, req.ReservedNUMA)
 	}
 	if err != nil {
 		return Allocation{}, err

@@ -48,6 +48,16 @@ const (
 	SMTLogical  SMTPolicy = "logical"
 )
 
+// RoundUpToCore 把逻辑核数向上取整到整物理核（full-core 语义：pin 永远给整核，
+// cpu=1 在 SMT2 节点上占 1 个完整物理核=2 逻辑核）。tpc<=1（无 SMT）或已对齐则原样。
+// agent 分配器 / 调度器 / AdmissionCheck 三处共用此函数，保证准入判定与实际分配一致。
+func RoundUpToCore(cpus, tpc int) int {
+	if tpc <= 1 || cpus%tpc == 0 {
+		return cpus
+	}
+	return (cpus/tpc + 1) * tpc
+}
+
 type ContainerRequest struct {
 	Name string
 	CPUs int

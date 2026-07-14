@@ -44,7 +44,7 @@ type Plugin struct {
 	shared   map[string]bool            // 共享池容器 id（围栏对象）
 	poolCtrs map[string]map[string]bool // 池名 → 成员容器 id（resize 广播用）
 	updater  func([]*api.ContainerUpdate) error
-	refence  chan struct{}              // 单槽合并信号：请求异步共享池重围栏
+	refence  chan struct{} // 单槽合并信号：请求异步共享池重围栏
 }
 
 func New(topo *topology.Topology, cfg *config.Config, pods PodGetter, rec Recorder, rep Reporter) (*Plugin, error) {

@@ -49,13 +49,22 @@ func (d Decision) String() string {
 	}
 }
 
+// effN 是每副本的有效逻辑核数：full-core 向上取整到整物理核（cpu=1 在 SMT2 上占
+// 1 整核=2 逻辑核），与 agent 分配器/调度器同一取整语义。logical 原样。
+func effN(need, tpc int, fullCore bool) int {
+	if fullCore {
+		return request.RoundUpToCore(need, tpc)
+	}
+	return need
+}
+
 // Capacity 返回分区(nodes)能放下多少个「各需 req.NeedPerRep 逻辑核、按 req 的
 // SMT/NUMA 策略」的副本，以及当前可用的整核逻辑核总数（供 message）。
 //
 //   - full-core（默认，非 logical）：按 FullCoreZones 收窄到「同物理核兄弟全空」的
-//     逻辑核，且 need 必须对齐 zone 的 TPC，否则该 zone/节点放不下。
-//   - single：每副本落单个 NUMA zone → 逐 zone floor(free/need) 累加。
-//   - preferred/spread：单副本可跨本节点的 zone → 逐节点 floor(nodeTotal/need) 累加。
+//     逻辑核，need 向上取整到整核（effN；cpu=1 → 1 整核）。
+//   - single：每副本落单个 NUMA zone → 逐 zone floor(free/effN) 累加。
+//   - preferred/spread：单副本可跨本节点的 zone → 逐节点 floor(nodeTotal/effN) 累加。
 func Capacity(nodes []NodeTopo, req Req) (replicas, freeCoreLogical int) {
 	need := req.NeedPerRep
 	if need <= 0 {
@@ -67,26 +76,20 @@ func Capacity(nodes []NodeTopo, req Req) (replicas, freeCoreLogical int) {
 		if fullCore {
 			zones = scheduler.FullCoreZones(n.Zones)
 		}
-		nodeTotal, nodeAligned := 0, true
+		nodeTotal, nodeTPC := 0, 1
 		for _, z := range zones {
 			freeCoreLogical += z.Free.Size()
 			nodeTotal += z.Free.Size()
-			if fullCore && need%z.TPC != 0 {
-				nodeAligned = false // 该请求无法在此 TPC 上对齐成整核
+			if z.TPC > nodeTPC {
+				nodeTPC = z.TPC
 			}
 		}
 		switch req.NUMAPolicy {
 		case request.NUMASpread, request.NUMAPreferred:
-			if fullCore && !nodeAligned {
-				continue
-			}
-			replicas += nodeTotal / need
+			replicas += nodeTotal / effN(need, nodeTPC, fullCore)
 		default: // single
 			for _, z := range zones {
-				if fullCore && need%z.TPC != 0 {
-					continue
-				}
-				replicas += z.Free.Size() / need
+				replicas += z.Free.Size() / effN(need, z.TPC, fullCore)
 			}
 		}
 	}
@@ -135,14 +138,15 @@ func Assign(nodes []NodeTopo, req Req, reserved map[string]map[int]int) ([]Place
 func assignOne(free [][]*zcap, names []string, req Req, fullCore bool, need int, out *[]Placement) bool {
 	if req.NUMAPolicy == request.NUMASpread || req.NUMAPolicy == request.NUMAPreferred {
 		for ni, zs := range free {
+			if len(zs) == 0 {
+				continue
+			}
+			en := effN(need, zs[0].tpc, fullCore) // 同节点各 zone 同 TPC
 			total := 0
 			for _, z := range zs {
-				if fullCore && need%z.tpc != 0 {
-					continue
-				}
 				total += z.free
 			}
-			if total < need {
+			if total < en {
 				continue
 			}
 			order := make([]int, len(zs)) // 大 zone 优先扣
@@ -150,14 +154,11 @@ func assignOne(free [][]*zcap, names []string, req Req, fullCore bool, need int,
 				order[i] = i
 			}
 			sort.Slice(order, func(a, b int) bool { return zs[order[a]].free > zs[order[b]].free })
-			rem := need
+			rem := en
 			for _, zi := range order {
 				z := zs[zi]
 				if rem == 0 {
 					break
-				}
-				if fullCore && need%z.tpc != 0 {
-					continue
 				}
 				take := z.free
 				if take > rem {
@@ -174,24 +175,22 @@ func assignOne(free [][]*zcap, names []string, req Req, fullCore bool, need int,
 		}
 		return false
 	}
-	// single：整 need 落一个 zone，binpack 取最小可容
+	// single：整（取整后的）need 落一个 zone，binpack 取最小可容
 	var best *zcap
-	bestNode, bestFree := "", int(^uint(0)>>1)
+	bestNode, bestFree, bestEn := "", int(^uint(0)>>1), 0
 	for ni, zs := range free {
 		for _, z := range zs {
-			if fullCore && need%z.tpc != 0 {
-				continue
-			}
-			if z.free >= need && z.free < bestFree {
-				best, bestNode, bestFree = z, names[ni], z.free
+			en := effN(need, z.tpc, fullCore)
+			if z.free >= en && z.free < bestFree {
+				best, bestNode, bestFree, bestEn = z, names[ni], z.free, en
 			}
 		}
 	}
 	if best == nil {
 		return false
 	}
-	best.free -= need
-	*out = append(*out, Placement{Node: bestNode, Zone: best.id, Cores: need})
+	best.free -= bestEn
+	*out = append(*out, Placement{Node: bestNode, Zone: best.id, Cores: bestEn})
 	return true
 }
 

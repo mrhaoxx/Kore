@@ -188,22 +188,20 @@ func (k *Kore) Filter(ctx context.Context, state fwk.CycleState, pod *corev1.Pod
 		}
 		return nil
 	}
-	// 调度器不知道 agent 的 ConfigMap 默认值；按注解未写 logical 即 full-core 保守判断
-	if st.req.SMTPolicy != request.SMTLogical && !AlignFullCore(ns.zones, st.need) {
-		return fwk.NewStatus(fwk.Unschedulable, "kore: cpu count not aligned to full cores on SMT node")
-	}
-	zones := effZones(st.req, ns.zones) // full-core：按整物理核容量判定
+	// full-core：按整物理核容量判定，need 向上取整到整核（奇数不再拒，与 agent 取整一致）
+	zones := effZones(st.req, ns.zones)
+	need := effNeed(st.req, ns.zones, st.need)
 	switch st.req.NUMAPolicy {
 	case request.NUMASpread:
-		if !FitSpread(zones, st.need) {
+		if !FitSpread(zones, need) {
 			return fwk.NewStatus(fwk.Unschedulable, "kore: insufficient free cpus for spread")
 		}
 	case request.NUMAPreferred:
-		if _, ok := FitPreferred(zones, st.need); !ok {
+		if _, ok := FitPreferred(zones, need); !ok {
 			return fwk.NewStatus(fwk.Unschedulable, "kore: insufficient free cpus")
 		}
 	default:
-		if _, ok := FitSingle(zones, st.need); !ok {
+		if _, ok := FitSingle(zones, need); !ok {
 			return fwk.NewStatus(fwk.Unschedulable, "kore: no NUMA zone with enough free cpus")
 		}
 	}
@@ -231,7 +229,8 @@ func (k *Kore) Score(ctx context.Context, state fwk.CycleState, pod *corev1.Pod,
 			return s, nil
 		}
 	}
-	return ScoreFit(effZones(st.req, ns.zones), st.req.NUMAPolicy, st.req.Explicit != nil, st.need), nil
+	return ScoreFit(effZones(st.req, ns.zones), st.req.NUMAPolicy, st.req.Explicit != nil,
+		effNeed(st.req, ns.zones, st.need)), nil
 }
 
 func (k *Kore) ScoreExtensions() fwk.ScoreExtensions { return nil }
@@ -263,18 +262,19 @@ func (k *Kore) Reserve(ctx context.Context, state fwk.CycleState, pod *corev1.Po
 		k.cache.Add(r)
 		return nil
 	}
-	r := Reservation{PodUID: string(pod.UID), Node: nodeName, Zone: -1, Count: st.need, Explicit: st.req.Explicit}
+	need := effNeed(st.req, ns.zones, st.need) // full-core 向上取整到整核；预占按此扣
+	r := Reservation{PodUID: string(pod.UID), Node: nodeName, Zone: -1, Count: need, Explicit: st.req.Explicit}
 	if st.req.Explicit == nil {
-		zones := effZones(st.req, ns.zones) // full-core：按整物理核选 zone
+		zones := effZones(st.req, ns.zones)
 		switch st.req.NUMAPolicy {
 		case request.NUMASpread:
 			// zone 保持 -1
 		case request.NUMAPreferred:
-			if z, ok := FitPreferred(zones, st.need); ok {
+			if z, ok := FitPreferred(zones, need); ok {
 				r.Zone = z
 			}
 		default:
-			z, fits := FitSingle(zones, st.need)
+			z, fits := FitSingle(zones, need)
 			if !fits {
 				return fwk.NewStatus(fwk.Unschedulable, "kore: capacity changed during scheduling cycle")
 			}
