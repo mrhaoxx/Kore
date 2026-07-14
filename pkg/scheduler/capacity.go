@@ -34,11 +34,11 @@ func ZonesFromCR(cr *v1alpha1.KoreNodeTopology) ([]ZoneCap, error) {
 	return out, nil
 }
 
-// fullCoreZones 把每个 zone 的 Free 收窄为「整物理核空闲」的逻辑核——同一物理核的
+// FullCoreZones 把每个 zone 的 Free 收窄为「整物理核空闲」的逻辑核——同一物理核的
 // 全部 SMT 兄弟都在 Free 里才保留。用于 full-core 独占请求：调度器据此按整核容量
 // 判定/打分，杜绝把 pin Pod 绑到「逻辑核够但整核不够（只剩孤儿兄弟）」的节点导致
 // kore-agent 到 NRI 阶段才失败。无 SMT（Siblings 为空）的 zone 原样返回。
-func fullCoreZones(zones []ZoneCap) []ZoneCap {
+func FullCoreZones(zones []ZoneCap) []ZoneCap {
 	out := make([]ZoneCap, len(zones))
 	for i, z := range zones {
 		if len(z.Siblings) == 0 { // 非 SMT：每个逻辑核即一个整核
@@ -67,7 +67,7 @@ func fullCoreZones(zones []ZoneCap) []ZoneCap {
 // logical）按整物理核收窄，其余（explicit / logical / 池）保持逻辑核原样。
 func effZones(req *request.Request, zones []ZoneCap) []ZoneCap {
 	if req.Explicit == nil && req.SMTPolicy != request.SMTLogical {
-		return fullCoreZones(zones)
+		return FullCoreZones(zones)
 	}
 	return zones
 }

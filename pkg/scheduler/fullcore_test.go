@@ -54,22 +54,22 @@ func TestFilterFullCoreRejectsOrphanSiblings(t *testing.T) {
 	}
 }
 
-// 单元级：fullCoreZones 只保留“同核所有兄弟都空”的逻辑核；非 SMT（无 sibling）原样。
+// 单元级：FullCoreZones 只保留“同核所有兄弟都空”的逻辑核；非 SMT（无 sibling）原样。
 func TestFullCoreZones(t *testing.T) {
 	// 孤儿：free={2,3}，对 [0,2]/[1,3]，0/1 占用 → 整核 0
-	orphan := fullCoreZones([]ZoneCap{{ID: 0, Free: mustCPUSet(t, "2-3"), TPC: 2,
+	orphan := FullCoreZones([]ZoneCap{{ID: 0, Free: mustCPUSet(t, "2-3"), TPC: 2,
 		Siblings: [][]int{{0, 2}, {1, 3}}}})
 	if orphan[0].Free.Size() != 0 {
 		t.Fatalf("孤儿兄弟应得 0 可用整核核，got %v", orphan[0].Free)
 	}
 	// 一个整核空：free={0,2}（对 [0,2] 都空）+ 孤儿 3 → 只保留 0,2
-	whole := fullCoreZones([]ZoneCap{{ID: 0, Free: mustCPUSet(t, "0,2-3"), TPC: 2,
+	whole := FullCoreZones([]ZoneCap{{ID: 0, Free: mustCPUSet(t, "0,2-3"), TPC: 2,
 		Siblings: [][]int{{0, 2}, {1, 3}}}})
 	if whole[0].Free.String() != "0,2" {
 		t.Fatalf("应只保留整核 {0,2}，got %v", whole[0].Free)
 	}
 	// 非 SMT（无 sibling）：原样返回
-	nosmt := fullCoreZones([]ZoneCap{{ID: 0, Free: mustCPUSet(t, "0-3"), TPC: 1}})
+	nosmt := FullCoreZones([]ZoneCap{{ID: 0, Free: mustCPUSet(t, "0-3"), TPC: 1}})
 	if nosmt[0].Free.String() != "0-3" {
 		t.Fatalf("非 SMT 应原样，got %v", nosmt[0].Free)
 	}
