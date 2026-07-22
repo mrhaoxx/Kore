@@ -55,6 +55,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	uid := string(wl.UID)
 
+	// 作业已结束：真实占用已从节点拓扑释放，预留立刻退场。否则短任务高频提交时，
+	// 每个已完成任务的预留还要幻影占位满整个 TTL，把空分区「占」到新作业全部
+	// Retry（现象：可用整核充足却排队等释放）。
+	if wl.Finished() {
+		r.Cache.Release(uid)
+		return ctrl.Result{}, nil
+	}
+
 	idx := -1
 	for i := range wl.Status.AdmissionChecks {
 		if wl.Status.AdmissionChecks[i].Name == r.CheckName {
@@ -73,7 +81,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, nil
 	}
 	if wl.Status.Admission == nil {
-		return ctrl.Result{}, nil // 尚未 QuotaReserved
+		r.Cache.Release(uid) // 尚未/不再 QuotaReserved（含被驱逐重排），预留作废
+		return ctrl.Result{}, nil
 	}
 
 	// 取第一个 pin 的 PodSet（plat101 为单 podSet batch Job）

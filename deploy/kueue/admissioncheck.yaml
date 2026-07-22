@@ -75,7 +75,7 @@ spec:
       serviceAccountName: kore-kueue-admissioncheck
       containers:
       - name: controller
-        image: docker.io/mrhaoxx/kore-kueue-admissioncheck:v0.3.5   # 按实际镜像仓库修改
+        image: docker.io/mrhaoxx/kore-kueue-admissioncheck:v0.3.6   # 按实际镜像仓库修改
         args:
         - --check-name=kore-cores
         - --reservation-ttl=5m

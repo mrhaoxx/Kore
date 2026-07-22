@@ -42,6 +42,18 @@ type PodSet struct {
 type WorkloadStatus struct {
 	Admission       *Admission            `json:"admission,omitempty"`
 	AdmissionChecks []AdmissionCheckState `json:"admissionChecks,omitempty"`
+	Conditions      []metav1.Condition    `json:"conditions,omitempty"`
+}
+
+// Finished 报告作业是否已结束（Kueue 置 Finished=True）。
+func (w *Workload) Finished() bool {
+	for i := range w.Status.Conditions {
+		c := &w.Status.Conditions[i]
+		if c.Type == "Finished" && c.Status == metav1.ConditionTrue {
+			return true
+		}
+	}
+	return false
 }
 
 type Admission struct {

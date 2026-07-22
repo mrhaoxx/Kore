@@ -215,6 +215,18 @@ func Evaluate(free, total []NodeTopo, req Req, reserved map[string]map[int]int) 
 			"kore: 分区整核空闲充足（%d 个 %d 核副本已可放）", req.Count, req.NeedPerRep), pl
 	}
 	_, freeCores := Capacity(free, req)
+	resv := 0
+	for _, zones := range reserved {
+		for _, c := range zones {
+			resv += c
+		}
+	}
+	if resv > 0 {
+		// 不带预留数的话，freeCores ≥ need 时这条消息看起来自相矛盾
+		return Retry, fmt.Sprintf(
+			"kore: 分区整核空闲不足：当前可用整核逻辑核 %d（另有 %d 核为在途预留），需 %d 个 %d 核副本，排队等释放",
+			freeCores, resv, req.Count, req.NeedPerRep), nil
+	}
 	return Retry, fmt.Sprintf(
 		"kore: 分区整核空闲不足：当前可用整核逻辑核 %d，需 %d 个 %d 核副本，排队等释放",
 		freeCores, req.Count, req.NeedPerRep), nil
