@@ -6,7 +6,9 @@ package deviceplugin
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -34,6 +36,7 @@ func New(count int, pluginDir string) *Server {
 func (s *Server) SocketPath() string { return filepath.Join(s.dir, socketName) }
 
 func (s *Server) Start() error {
+	_ = os.Remove(s.SocketPath()) // stale socket from a previous life
 	lis, err := net.Listen("unix", s.SocketPath())
 	if err != nil {
 		return err
@@ -66,6 +69,51 @@ func (s *Server) Register(kubeletSocket string) error {
 		ResourceName: request.ExtendedResource,
 	})
 	return err
+}
+
+// RunGuard keeps the registration alive across kubelet restarts. kubelet
+// wipes the device-plugin dir on startup and forgets all registrations; a
+// one-shot Register therefore decays into allocatable=0 and every pod
+// requesting kore.zjusct.io/cpu becomes unschedulable (bit m602-604 after
+// node reboots). Poll for our socket vanishing or kubelet.sock being
+// recreated, then re-listen and re-register.
+func (s *Server) RunGuard(ctx context.Context, kubeletSocket string) {
+	tick := time.NewTicker(5 * time.Second)
+	defer tick.Stop()
+	last, _ := os.Stat(kubeletSocket)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.stopCh:
+			return
+		case <-tick.C:
+		}
+		cur, err := os.Stat(kubeletSocket)
+		if err != nil {
+			continue // kubelet down/mid-restart: wait for its socket to return
+		}
+		_, oursErr := os.Stat(s.SocketPath())
+		kubeletNew := last == nil || !os.SameFile(last, cur)
+		if oursErr == nil && !kubeletNew {
+			continue
+		}
+		log.Printf("kore deviceplugin: kubelet restart detected (our socket gone=%v, kubelet.sock new=%v); re-registering", oursErr != nil, kubeletNew)
+		if s.grpc != nil {
+			s.grpc.Stop()
+		}
+		if e := s.Start(); e != nil {
+			log.Printf("kore deviceplugin: re-listen failed: %v (retrying)", e)
+			last = nil
+			continue
+		}
+		if e := s.Register(kubeletSocket); e != nil {
+			log.Printf("kore deviceplugin: re-register failed: %v (retrying)", e)
+			last = nil
+			continue
+		}
+		last = cur
+	}
 }
 
 func (s *Server) GetDevicePluginOptions(context.Context, *pluginapi.Empty) (*pluginapi.DevicePluginOptions, error) {

@@ -140,6 +140,7 @@ func run(sysfs, nodeName, cfgPath, namespace, kubeletDir string) error {
 	if err := dp.Register(kubeletDir + "/kubelet.sock"); err != nil {
 		return err
 	}
+	go dp.RunGuard(ctx, kubeletDir+"/kubelet.sock") // survive kubelet restarts
 
 	renewer := lease.NewRenewer(cs, nodeName, namespace, 15)
 	if err := renewer.RenewOnce(ctx); err != nil {
